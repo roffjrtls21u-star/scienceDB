@@ -1,1325 +1,862 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>여울초 과학실 물품 검색</title>
-    
-    <!-- 1. Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- 2. Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Noto Sans KR', sans-serif; }
-        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-        .animate-fade-in-down { animation: fadeInDown 0.3s ease-in-out; }
-        .animate-slide-up { animation: slideUp 0.3s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #f1f5f9; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-    </style>
+import React, { useState, useMemo, useEffect } from 'react';
+import { Search, MapPin, Package, Plus, Minus, Edit2, Trash2, PlusCircle, Filter, Beaker, X, Save, TestTube, Database, CloudUpload, RefreshCw, AlertTriangle, ClipboardList, User, Calendar, CheckCircle, Clock, History, AlertCircle, Check } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, writeBatch, orderBy, query } from 'firebase/firestore';
 
-    <!-- 3. Import Map -->
-    <script type="importmap">
-    {
-        "imports": {
-            "react": "https://esm.sh/react@18.2.0",
-            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-            "lucide-react": "https://esm.sh/lucide-react@0.263.1",
-            "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
-            "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
-            "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"
-        }
+// =================================================================
+// ✅ 선생님의 Firebase 설정
+// =================================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyBP6oC0RH728IWwpTZxSGTRiS8ivVqdhjs",
+  authDomain: "yeoulsciencelab.firebaseapp.com",
+  projectId: "yeoulsciencelab",
+  storageBucket: "yeoulsciencelab.firebasestorage.app",
+  messagingSenderId: "353295377528",
+  appId: "1:353295377528:web:83dd4c370c48e49e47f98d"
+};
+
+// 앱 초기화
+let app, auth, db;
+let initError = null;
+const PROJECT_ID = "yeoulsciencelab"; 
+
+try {
+  app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+} catch (e) {
+  console.warn("Firebase initialization failed:", e);
+  initError = e.message;
+}
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [activeTab, setActiveTab] = useState('search');
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // Inventory State
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [newItem, setNewItem] = useState({ location: '', item: '', quantity: 0, room: '2과학실' });
+  const [editItemData, setEditItemData] = useState({});
+  const [roomFilter, setRoomFilter] = useState('all');
+  const [inventory, setInventory] = useState([]);
+  
+  // Loan State
+  const [loans, setLoans] = useState([]);
+  const [newLoan, setNewLoan] = useState({ borrower: '', itemId: '', itemName: '', quantity: 1 });
+  
+  // System State
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [isOffline, setIsOffline] = useState(!!initError || !app);
+  const [connectionError, setConnectionError] = useState(null);
+
+  // UI State
+  const [toast, setToast] = useState(null); // { message, type: 'success' | 'error' }
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null); // For 2-step delete
+
+  // --- Helper: Toast Notification ---
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  // --- Auth & Data Sync ---
+  useEffect(() => {
+    if (!app) {
+      setInventory(initialInventory.map((item, idx) => ({ ...item, id: idx.toString() })));
+      setLoading(false);
+      return;
     }
-    </script>
-    
-    <!-- 4. Babel -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body class="bg-slate-50 text-slate-800">
-    <div id="root"></div>
 
-    <script type="text/babel" data-type="module">
-        import React, { useState, useMemo, useEffect, useCallback } from 'react';
-        import { createRoot } from 'react-dom/client';
-        import { Search, MapPin, Package, Plus, Minus, Edit2, Trash2, PlusCircle, Filter, Beaker, X, Save, TestTube, Database, UploadCloud, RefreshCw, AlertTriangle, FileSpreadsheet, CheckCircle, AlertCircle, ClipboardList, User, Calendar, ArrowRight, CornerDownRight, Laptop, Sparkles } from 'lucide-react';
-        import { initializeApp } from 'firebase/app';
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-        import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, writeBatch, serverTimestamp, query, orderBy, where } from 'firebase/firestore';
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (err) {
+        console.error("Auth failed:", err);
+        setConnectionError("로그인 실패: 익명 로그인 설정을 확인해주세요.");
+        setIsOffline(true);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
 
-        // Gemini API Configuration
-        const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
-        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=`;
-        const API_KEY = ""; // Canvas environment will inject the API key
+  // Fetch Inventory
+  useEffect(() => {
+    if (!user || !db) return;
 
-        // Utility function for exponential backoff retry
-        const fetchWithRetry = async (url, options, retries = 3) => {
-            for (let i = 0; i < retries; i++) {
-                try {
-                    const response = await fetch(url + API_KEY, options);
-                    if (response.ok) return response.json();
-                    if (response.status === 429 && i < retries - 1) {
-                        const delay = Math.pow(2, i) * 1000;
-                        console.warn(`Rate limit hit, retrying in ${delay / 1000}s...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        continue;
-                    }
-                    throw new Error(`API request failed with status ${response.status}`);
-                } catch (error) {
-                    if (i === retries - 1) throw error;
-                    const delay = Math.pow(2, i) * 1000;
-                    console.warn(`Fetch error, retrying in ${delay / 1000}s...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
-            }
-        };
+    const inventoryRef = collection(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory');
+    const unsubscribeInventory = onSnapshot(inventoryRef, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      items.sort((a, b) => {
+        if (a.room !== b.room) return a.room.localeCompare(b.room);
+        return a.item.localeCompare(b.item);
+      });
+      
+      setInventory(items);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching inventory:", error);
+      setLoading(false);
+      if (inventory.length === 0) {
+         setInventory(initialInventory.map((item, idx) => ({ ...item, id: idx.toString() })));
+      }
+    });
 
-        // --- Toast Component ---
-        const Toast = ({ message, type, onClose }) => {
-            useEffect(() => {
-                const timer = setTimeout(onClose, 3000);
-                return () => clearTimeout(timer);
-            }, [onClose]);
+    return () => unsubscribeInventory();
+  }, [user]);
 
-            const bgClass = type === 'success' ? 'bg-green-600' : (type === 'info' ? 'bg-indigo-600' : 'bg-red-600');
-            const icon = type === 'success' ? <CheckCircle size={20} /> : (type === 'info' ? <Laptop size={20}/> : <AlertCircle size={20} />);
+  // Fetch Loans
+  useEffect(() => {
+    if (!user || !db) return;
 
-            return (
-                <div className={`fixed bottom-4 right-4 ${bgClass} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 animate-slide-up z-50`}>
-                    {icon}
-                    <span className="font-medium">{message}</span>
-                </div>
-            );
-        };
+    const loansRef = collection(db, 'artifacts', PROJECT_ID, 'public', 'data', 'loans');
+    const unsubscribeLoans = onSnapshot(loansRef, (snapshot) => {
+      const loanItems = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      loanItems.sort((a, b) => new Date(b.borrowDate) - new Date(a.borrowDate));
+      setLoans(loanItems);
+    }, (error) => {
+      console.error("Error fetching loans:", error);
+    });
 
-        // --- Confirmation Modal Component ---
-        const ConfirmModal = ({ isOpen, message, onConfirm, onCancel }) => {
-            if (!isOpen) return null;
-            return (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in p-4">
-                    <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl transform transition-all scale-100">
-                        <h3 className="text-lg font-bold mb-4 text-slate-800">확인</h3>
-                        <p className="text-slate-600 mb-6">{message}</p>
-                        <div className="flex gap-3">
-                            <button onClick={onCancel} className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-bold hover:bg-slate-200 transition-colors">취소</button>
-                            <button onClick={onConfirm} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors">확인</button>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
+    return () => unsubscribeLoans();
+  }, [user]);
+
+  // --- CRUD Operations (Inventory) ---
+  const addItem = async () => {
+    if (newItem.item && newItem.location) {
+      if (user && db && !connectionError) {
+        try {
+          const collectionRef = collection(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory');
+          await addDoc(collectionRef, newItem);
+          showToast("물품이 등록되었습니다.");
+        } catch (e) {
+          showToast("저장 실패: " + e.message, 'error');
+          return;
+        }
+      } else {
+        setInventory(prev => [...prev, { ...newItem, id: Date.now().toString() }]);
+        showToast("오프라인 모드: 물품이 임시 등록되었습니다.");
+      }
+      setNewItem({ location: '', item: '', quantity: 0, room: '2과학실' });
+      setShowAddForm(false);
+    }
+  };
+
+  const deleteItem = async (id) => {
+    // 2-step deletion
+    if (deleteConfirmId !== id) {
+      setDeleteConfirmId(id);
+      setTimeout(() => setDeleteConfirmId(null), 3000); // Reset after 3s
+      return;
+    }
+
+    if (user && db && !connectionError) {
+      const docRef = doc(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory', id);
+      await deleteDoc(docRef);
+      showToast("물품이 삭제되었습니다.");
+    } else {
+      setInventory(prev => prev.filter(item => item.id !== id));
+      showToast("삭제되었습니다.");
+    }
+    setDeleteConfirmId(null);
+  };
+
+  const adjustQuantity = async (id, currentQty, delta) => {
+    const newQty = Math.max(0, (currentQty || 0) + delta);
+    if (user && db && !connectionError) {
+      const docRef = doc(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory', id);
+      await updateDoc(docRef, { quantity: newQty });
+    } else {
+      setInventory(prev => prev.map(item => item.id === id ? { ...item, quantity: newQty } : item));
+    }
+  };
+
+  const saveEditing = async (id) => {
+    if (user && db && !connectionError) {
+      const docRef = doc(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory', id);
+      await updateDoc(docRef, editItemData);
+      showToast("수정사항이 저장되었습니다.");
+    } else {
+      setInventory(prev => prev.map(item => item.id === id ? editItemData : item));
+      showToast("수정되었습니다.");
+    }
+    setEditingId(null);
+  };
+
+  // --- CRUD Operations (Loans) ---
+  const addLoan = async () => {
+    if (!newLoan.borrower || !newLoan.itemId) {
+      showToast("대여자 이름과 물품을 모두 선택해주세요.", 'error');
+      return;
+    }
+
+    const selectedItem = inventory.find(i => i.id === newLoan.itemId);
+    if (!selectedItem) {
+        showToast("선택한 물품을 찾을 수 없습니다.", 'error');
+        return;
+    }
+
+    // 재고 확인
+    if (selectedItem.quantity < newLoan.quantity) {
+        showToast(`재고가 부족합니다. (현재: ${selectedItem.quantity}개)`, 'error');
+        return;
+    }
+
+    const loanData = {
+      borrower: newLoan.borrower,
+      itemId: newLoan.itemId,
+      itemName: selectedItem.item,
+      itemRoom: selectedItem.room,
+      quantity: newLoan.quantity,
+      borrowDate: new Date().toLocaleString('ko-KR'),
+      returnDate: null,
+      status: 'borrowed'
+    };
+
+    if (user && db && !connectionError) {
+      try {
+        const batch = writeBatch(db);
         
-        // --- Gemini Output Modal ---
-        const GeminiOutputModal = ({ isOpen, title, content, onClose, isLoading }) => {
-            if (!isOpen) return null;
-            return (
-                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 animate-fade-in p-4">
-                    <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl h-[80vh] flex flex-col">
-                        <div className="flex justify-between items-center mb-4 border-b pb-3">
-                            <h3 className="text-xl font-extrabold text-indigo-700 flex items-center gap-2">
-                                <Sparkles size={24} className="text-indigo-500"/> {title}
-                            </h3>
-                            <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-full bg-slate-100"><X size={20}/></button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto space-y-4 text-slate-700 leading-relaxed custom-scrollbar">
-                            {isLoading ? (
-                                <div className="text-center py-12">
-                                    <RefreshCw className="animate-spin mx-auto text-indigo-400" size={32}/>
-                                    <p className="mt-4 font-medium">Gemini가 안전 정보를 분석 중입니다...</p>
-                                </div>
-                            ) : (
-                                <p className="whitespace-pre-wrap">{content}</p>
-                            )}
-                        </div>
+        // 1. 대여 기록 생성
+        const loanRef = doc(collection(db, 'artifacts', PROJECT_ID, 'public', 'data', 'loans'));
+        batch.set(loanRef, loanData);
+
+        // 2. 재고 차감
+        const inventoryRef = doc(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory', newLoan.itemId);
+        batch.update(inventoryRef, { quantity: selectedItem.quantity - newLoan.quantity });
+
+        await batch.commit();
+        showToast("대여 처리 및 재고 차감 완료");
+      } catch (e) {
+        showToast("대여 처리 실패: " + e.message, 'error');
+        return;
+      }
+    } else {
+      // 오프라인 모드 처리
+      setLoans(prev => [{ ...loanData, id: Date.now().toString() }, ...prev]);
+      setInventory(prev => prev.map(item => 
+        item.id === newLoan.itemId 
+          ? { ...item, quantity: item.quantity - newLoan.quantity }
+          : item
+      ));
+      showToast("오프라인 모드: 대여 기록 및 재고 차감");
+    }
+
+    setNewLoan({ borrower: '', itemId: '', itemName: '', quantity: 1 });
+  };
+
+  const returnLoan = async (loanId) => {
+    const loanToReturn = loans.find(l => l.id === loanId);
+    if (!loanToReturn) return;
+
+    const returnDate = new Date().toLocaleString('ko-KR');
+    const itemInInventory = inventory.find(i => i.id === loanToReturn.itemId);
+
+    if (user && db && !connectionError) {
+      try {
+        const batch = writeBatch(db);
+        
+        // 1. 반납 상태 업데이트
+        const loanRef = doc(db, 'artifacts', PROJECT_ID, 'public', 'data', 'loans', loanId);
+        batch.update(loanRef, {
+          returnDate: returnDate,
+          status: 'returned'
+        });
+
+        // 2. 재고 복구 (물품이 삭제되지 않았을 경우에만)
+        if (itemInInventory) {
+          const inventoryRef = doc(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory', loanToReturn.itemId);
+          batch.update(inventoryRef, { quantity: itemInInventory.quantity + loanToReturn.quantity });
+        }
+
+        await batch.commit();
+        showToast("반납 처리 및 재고 복구 완료");
+      } catch (e) {
+        showToast("반납 처리 실패: " + e.message, 'error');
+        return;
+      }
+    } else {
+      // 오프라인 모드 처리
+      setLoans(prev => prev.map(l => l.id === loanId ? { ...l, returnDate, status: 'returned' } : l));
+      if (itemInInventory) {
+        setInventory(prev => prev.map(item => 
+            item.id === loanToReturn.itemId 
+              ? { ...item, quantity: item.quantity + loanToReturn.quantity }
+              : item
+          ));
+      }
+      showToast("반납 처리되었습니다.");
+    }
+  };
+
+  const uploadInitialData = async () => {
+    if (!user || !db) return;
+    if (connectionError) {
+      showToast("서버 연결 문제로 업로드할 수 없습니다.", 'error');
+      return;
+    }
+    // Simple alert replacement
+    const confirmUpload = window.confirm('이미 데이터가 존재할 수 있습니다. 초기 데이터를 업로드하시겠습니까?');
+    if (!confirmUpload) return;
+    
+    setUploading(true);
+    try {
+      const batch = writeBatch(db);
+      const collectionRef = collection(db, 'artifacts', PROJECT_ID, 'public', 'data', 'inventory');
+      
+      let count = 0;
+      for (const item of initialInventory) {
+        const newDocRef = doc(collectionRef);
+        const { id, ...itemData } = item;
+        batch.set(newDocRef, itemData);
+        count++;
+        if (count >= 400) {
+           await batch.commit();
+           count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+      showToast("초기 데이터 업로드 완료!");
+    } catch (e) {
+      showToast("업로드 오류: " + e.message, 'error');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // --- Local State Helpers & Data ---
+  const startEditing = (item) => {
+    setEditingId(item.id);
+    setEditItemData({ ...item });
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditItemData({});
+  };
+
+  const experiments = [
+    { name: '단원 평가', grade: '3-6', tools: ['스티커', '가위'] },
+    { name: '나침반 만들기', grade: '3', tools: ['나침반', '막대자석'] },
+    { name: '자석 놀이', grade: '3', tools: ['막대자석', '자석6종세트'] },
+    { name: '그림자 관찰', grade: '3', tools: ['손전등', '스탠드'] },
+    { name: '액체 관찰', grade: '4', tools: ['비커', '스포이트', '페트리접시'] },
+    { name: '혼합물 분리', grade: '4', tools: ['비커', '깔대기', '거름종이', '유리막대'] },
+    { name: '용해와 용액', grade: '5', tools: ['비커', '유리막대', '스포이트', '페트리접시'] },
+    { name: '산과 염기', grade: '5', tools: ['비커', 'PH미터기', '스포이트', '시험관'] },
+    { name: '전기회로', grade: '6', tools: ['전지', '전지끼우개', '집게전선', '꼬마전구', '스위치'] },
+    { name: '전자석', grade: '6', tools: ['전자석만들기 재료', '전지', '나침반'] },
+    { name: '렌즈', grade: '6', tools: ['볼록렌즈', '오목렌즈', '평면렌즈', '레이저포인터'] },
+    { name: '빛의 굴절', grade: '6', tools: ['삼각프리즘', '레이저포인터', '볼록렌즈'] },
+    { name: '연소', grade: '6', tools: ['알콜램프', '삼발이', '세라믹그물망', '비커', '집기병'] },
+    { name: '기체 발생', grade: '6', tools: ['삼각플라스크', '시험관', '고무마개', 'ㄱ자유리관', '집기병'] },
+    { name: '현미경 관찰', grade: '6', tools: ['광학현미경', '페트리접시', '슬라이드글라스', '스포이트'] },
+    { name: '호흡', grade: '6', tools: ['호흡운동실험모형', '폐모형'] },
+    { name: '심장', grade: '6', tools: ['펌프', '청진기'] },
+    { name: '뼈와 근육', grade: '6', tools: ['인체모형', '팔근육모형'] },
+    { name: '용수철', grade: '5', tools: ['용수철', '무게추', '자'] },
+    { name: '온도계', grade: '3-6', tools: ['알코올온도계', '디지털온도계'] },
+    { name: '태양 관찰', grade: '6', tools: ['태양고도측정기', '나침반'] },
+    { name: '지구와 달', grade: '6', tools: ['지구의', '지구+달 공전모형'] },
+    { name: '물의 상태변화', grade: '3', tools: ['비커', '알콜램프', '삼발이', '온도계'] },
+    { name: '물체의 무게', grade: '3', tools: ['전자저울', '용수철저울'] },
+    { name: '자석', grade: '3', tools: ['막대자석', '자석6종세트', '나침반'] }
+  ];
+  
+  const initialInventory = [
+    { location: '1과교 안전보관함', item: '구급상자', quantity: 1, room: '1과학실' },
+    { location: '1과교 안전보관함', item: '방진마스크', quantity: 40, room: '1과학실' },
+    { location: '1과교 안전보관함', item: '눈세척기', quantity: 1, room: '1과학실' },
+    { location: '1과교 안전보관함', item: '일회용마스크', quantity: 50, room: '1과학실' },
+    { location: '1과교 안전보관함', item: '내열장갑', quantity: 13, room: '1과학실' },
+    { location: '1과교 안전보관함', item: '면장갑', quantity: 20, room: '1과학실' },
+    { location: '1과교 1', item: '보안경(레이저용)', quantity: 30, room: '1과학실' },
+    { location: '1과교 1', item: '보안경(일반용)', quantity: 25, room: '1과학실' },
+    { location: '1과교 2', item: '라텍스실험용 장갑 S', quantity: 225, room: '1과학실' },
+    { location: '1과교 2', item: '라텍스실험용 장갑 M', quantity: 225, room: '1과학실' },
+    { location: '1과교 3', item: '커팅매트', quantity: 7, room: '1과학실' },
+    { location: '1과교 3', item: '멀티탭', quantity: 2, room: '1과학실' },
+    { location: '1과교 11', item: '비커 250ml', quantity: 12, room: '1과학실' },
+    { location: '1과교 11', item: '비커 300ml', quantity: 24, room: '1과학실' },
+    { location: '1과교 11', item: '비커 500ml', quantity: 26, room: '1과학실' },
+    { location: '1과교 11', item: '비커 1L', quantity: 24, room: '1과학실' },
+    { location: '1과교 11', item: '비커 100ml', quantity: 21, room: '1과학실' },
+    { location: '1과교 13,15', item: '사각수조(대)', quantity: 10, room: '1과학실' },
+    { location: '1과교 15', item: '사각수조(소)', quantity: 8, room: '1과학실' },
+    { location: '1과교 16', item: '원형수조(대)', quantity: 5, room: '1과학실' },
+    { location: '1과준 19(상)', item: '깔대기(유리+플라스틱)', quantity: 22, room: '1과학실' },
+    { location: '1과준 20(상)', item: '알콜램프', quantity: 12, room: '1과학실' },
+    { location: '1과준 20(상)', item: '삼발이', quantity: 7, room: '1과학실' },
+    { location: '1과준 21(하)', item: '열전구(적외선전구)', quantity: 4, room: '1과학실' },
+    { location: '1과준 21(하)', item: '전기스탠드(갓없음)', quantity: 6, room: '1과학실' },
+    { location: '1과준 22(상)', item: '호흡운동실험모형', quantity: 6, room: '1과학실' },
+    { location: '1과준 22(상)', item: '진공실험장치', quantity: 6, room: '1과학실' },
+    { location: '1과준 22(상)', item: '전자저울', quantity: 8, room: '1과학실' },
+    { location: '1과준 27(상)', item: '레이저포인터', quantity: 6, room: '1과학실' },
+    { location: '1과준 27(상)', item: '손전등', quantity: 6, room: '1과학실' },
+    { location: '1과준 27(상)', item: '평면렌즈', quantity: 6, room: '1과학실' },
+    { location: '1과준 27(상)', item: '삼각프리즘', quantity: 6, room: '1과학실' },
+    { location: '1과준 27(상)', item: '볼록렌즈', quantity: 6, room: '1과학실' },
+    { location: '1과준 27(상)', item: '오목렌즈', quantity: 6, room: '1과학실' },
+    { location: '1과준 29(하)', item: '지구의', quantity: 5, room: '1과학실' },
+    { location: '1과준 29(하)', item: '지구+달 공전모형', quantity: 2, room: '1과학실' },
+    { location: '1과준 29(하)', item: '나침반', quantity: 10, room: '1과학실' },
+    { location: '1과준 30(상)', item: '막대자석', quantity: 15, room: '1과학실' },
+    { location: '1과준 24(상)', item: '전지', quantity: 50, room: '1과학실' },
+    { location: '1과준 24(상)', item: '전지끼우개', quantity: 30, room: '1과학실' },
+    { location: '1과준 24(상)', item: '집게전선', quantity: 40, room: '1과학실' },
+    { location: '1과준 24(상)', item: '꼬마전구', quantity: 50, room: '1과학실' },
+    { location: '1과준 24(상)', item: '전자석만들기 재료', quantity: 20, room: '1과학실' },
+    { location: '1과준 25', item: '팔근육모형', quantity: 6, room: '1과학실' },
+    { location: '1과준 25', item: '인체모형', quantity: 3, room: '1과학실' },
+    { location: '1과준 28(상)', item: '알코올온도계', quantity: 30, room: '1과학실' },
+    { location: '1과준 27(서랍)', item: '유리막대', quantity: 25, room: '1과학실' },
+    { location: '1과준 28(서랍)', item: 'PH미터기', quantity: 3, room: '1과학실' },
+    { location: '1과준 28(서랍)', item: 'ㄱ자유리관', quantity: 20, room: '1과학실' },
+    { location: '1과준 28(서랍)', item: '고무마개', quantity: 30, room: '1과학실' },
+    { location: '1과준 28(서랍)', item: '핀셋', quantity: 20, room: '1과학실' },
+    { location: '1과준 20(하)', item: '시험관(유리)', quantity: 40, room: '1과학실' },
+    { location: '1과준 20(하)', item: '시험관(플라스틱)', quantity: 50, room: '1과학실' },
+    { location: '1과준 19(하)', item: '페트리접시(유리)', quantity: 30, room: '1과학실' },
+    { location: '1과준 19(하)', item: '페트리접시(플라스틱)', quantity: 40, room: '1과학실' },
+    { location: '1과준 19(상)', item: '스포이트(유리)', quantity: 30, room: '1과학실' },
+    { location: '1과준 19(상)', item: '스포이트(일회용)', quantity: 200, room: '1과학실' },
+    { location: '1과준 18(상)', item: '삼각플라스크 100ml', quantity: 15, room: '1과학실' },
+    { location: '1과준 18(상)', item: '삼각플라스크 250ml', quantity: 12, room: '1과학실' },
+    { location: '1과준 21(하)', item: '집기병 250ml', quantity: 8, room: '1과학실' },
+    { location: '1과준 21(하)', item: '집기병 500ml', quantity: 6, room: '1과학실' },
+    { location: '1과준 20(상)', item: '세라믹그물망', quantity: 10, room: '1과학실' },
+    { location: '1과준 27(상)', item: '태양고도측정기', quantity: 8, room: '1과학실' },
+    { location: '1과준 30(하)', item: '청진기', quantity: 5, room: '1과학실' },
+    { location: '1과준 22(상)', item: '펌프', quantity: 6, room: '1과학실' },
+    { location: '2과교 1', item: '면장갑', quantity: 50, room: '2과학실' },
+    { location: '2과교 1', item: '내열장갑', quantity: 15, room: '2과학실' },
+    { location: '2과교 1', item: '보안경(일반용)', quantity: 30, room: '2과학실' },
+    { location: '2과교 10', item: '비커 500ml', quantity: 19, room: '2과학실' },
+    { location: '2과교 10', item: '비커 1000ml', quantity: 8, room: '2과학실' },
+    { location: '2과교 10', item: '전기주전자(커피포트)', quantity: 2, room: '2과학실' },
+    { location: '2과교 12', item: '비커 200ml', quantity: 19, room: '2과학실' },
+    { location: '2과교 12', item: '비커 50ml', quantity: 30, room: '2과학실' },
+    { location: '2과교 12', item: '비커 100ml', quantity: 11, room: '2과학실' },
+    { location: '2과교 12', item: '비커 300ml', quantity: 27, room: '2과학실' },
+    { location: '2과교 2', item: '라텍스실험용 장갑 S', quantity: 300, room: '2과학실' },
+    { location: '2과교 2', item: '라텍스실험용 장갑 M', quantity: 450, room: '2과학실' },
+    { location: '2과교 2', item: '마스크 중형', quantity: 400, room: '2과학실' },
+    { location: '2과교 2', item: '지퍼백', quantity: 400, room: '2과학실' },
+    { location: '2과교 2', item: '위생백', quantity: 1500, room: '2과학실' },
+    { location: '2과교 6(상)', item: '블루투스피커', quantity: 9, room: '2과학실' },
+    { location: '2과교 6(상)', item: '소리굽쇠', quantity: 6, room: '2과학실' },
+    { location: '2과교 안전보관함', item: '구급상자', quantity: 1, room: '2과학실' },
+    { location: '2과교 안전보관함', item: '방진마스크', quantity: 40, room: '2과학실' },
+    { location: '2과교 안전보관함', item: '눈세척기', quantity: 1, room: '2과학실' },
+    { location: '2과준', item: '지구본', quantity: 6, room: '2과학실' },
+    { location: '2과준', item: '원형수조(대)', quantity: 11, room: '2과학실' },
+    { location: '2과준', item: '원형수조(소)', quantity: 12, room: '2과학실' },
+    { location: '2과준 17(상)', item: '시험관(플라스틱)', quantity: 30, room: '2과학실' },
+    { location: '2과준 17(상)', item: '시험관(유리)', quantity: 14, room: '2과학실' },
+    { location: '2과준 17(상)', item: '스포이트(일회용)', quantity: 300, room: '2과학실' },
+    { location: '2과준 17(서랍)', item: '핀셋', quantity: 27, room: '2과학실' },
+    { location: '2과준 17(서랍)', item: '유리막대', quantity: 40, room: '2과학실' },
+    { location: '2과준 17(서랍)', item: '초시계', quantity: 20, room: '2과학실' },
+    { location: '2과준 18(상)', item: '삼각플라스크 100ml', quantity: 9, room: '2과학실' },
+    { location: '2과준 18(상)', item: '알콜램프+알코올', quantity: 6, room: '2과학실' },
+    { location: '2과준 19(상)', item: '바이알병', quantity: 120, room: '2과학실' },
+    { location: '2과준 19(상)', item: '돋보기', quantity: 29, room: '2과학실' },
+    { location: '2과준 19(하)', item: '광학현미경', quantity: 6, room: '2과학실' },
+    { location: '2과준 19(상)', item: '자석6종세트', quantity: 30, room: '2과학실' },
+  ];
+
+  const findToolsForExperiment = (experimentName) => {
+    const normalize = (str) => str.toLowerCase().replace(/\s+/g, '');
+    const term = normalize(experimentName);
+    const exp = experiments.find(e => {
+      const normName = normalize(e.name);
+      return normName.includes(term) || term.includes(normName);
+    });
+
+    if (!exp) return null;
+    
+    const tools = exp.tools;
+    const foundItems = [];
+    
+    tools.forEach(tool => {
+      const matches = inventory.filter(item => 
+        item.item.toLowerCase().includes(tool.toLowerCase()) || 
+        tool.toLowerCase().includes(item.item.toLowerCase())
+      );
+      foundItems.push(...matches);
+    });
+    
+    const uniqueItems = Array.from(new Set(foundItems.map(a => a.id)))
+      .map(id => foundItems.find(a => a.id === id));
+    
+    return { experiment: exp, items: uniqueItems };
+  };
+
+  const filteredInventory = useMemo(() => {
+    if (roomFilter === 'all') return inventory;
+    return inventory.filter(item => item.room === roomFilter);
+  }, [inventory, roomFilter]);
+
+  const searchResults = useMemo(() => {
+    if (!searchTerm.trim()) return { type: 'none', data: [] };
+    
+    const expResult = findToolsForExperiment(searchTerm);
+    if (expResult) {
+      return { type: 'experiment', data: expResult };
+    }
+    
+    const term = searchTerm.toLowerCase();
+    const items = filteredInventory.filter(item => 
+      item.item.toLowerCase().includes(term) || item.location.toLowerCase().includes(term)
+    );
+    
+    return { type: 'items', data: items };
+  }, [searchTerm, filteredInventory]);
+
+  // Derived state for loans
+  const activeLoans = useMemo(() => loans.filter(l => l.status === 'borrowed'), [loans]);
+  const returnedLoans = useMemo(() => loans.filter(l => l.status === 'returned'), [loans]);
+
+  const InventoryCard = ({ item, highlight = false }) => (
+    <div key={item.id} className={`bg-white rounded-xl shadow-sm border-l-4 p-5 transition-all hover:shadow-md ${item.room === '1과학실' ? 'border-green-500' : 'border-blue-500'} ${highlight ? 'ring-2 ring-indigo-200' : ''}`}>
+      {editingId === item.id ? (
+        <div className="space-y-3 animate-fade-in">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-500">물품명</label>
+              <input type="text" value={editItemData.item} onChange={(e) => setEditItemData({...editItemData, item: e.target.value})} className="w-full border rounded p-1 text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">위치</label>
+              <input type="text" value={editItemData.location} onChange={(e) => setEditItemData({...editItemData, location: e.target.value})} className="w-full border rounded p-1 text-sm" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex-1">
+              <label className="text-xs text-gray-500">수량</label>
+              <input type="number" value={editItemData.quantity} onChange={(e) => setEditItemData({...editItemData, quantity: parseInt(e.target.value) || 0})} className="w-full border rounded p-1 text-sm" />
+            </div>
+            <div className="flex-1">
+               <label className="text-xs text-gray-500">과학실</label>
+               <select value={editItemData.room} onChange={(e) => setEditItemData({...editItemData, room: e.target.value})} className="w-full border rounded p-1 text-sm">
+                 <option value="1과학실">1과학실</option>
+                 <option value="2과학실">2과학실</option>
+               </select>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button onClick={() => saveEditing(item.id)} className="flex-1 bg-green-600 text-white py-1 rounded text-sm flex items-center justify-center gap-1"><Save size={14}/> 저장</button>
+            <button onClick={cancelEditing} className="flex-1 bg-gray-300 text-gray-700 py-1 rounded text-sm flex items-center justify-center gap-1"><X size={14}/> 취소</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex justify-between items-start mb-2">
+            <div>
+              <span className={`inline-block px-2 py-1 rounded text-xs font-bold mb-1 ${item.room === '1과학실' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
+                {item.room}
+              </span>
+              <h3 className="text-lg font-bold text-gray-800">{item.item}</h3>
+            </div>
+            <div className="flex gap-1">
+              <button onClick={() => startEditing(item)} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"><Edit2 size={16} /></button>
+              {deleteConfirmId === item.id ? (
+                <button onClick={() => deleteItem(item.id)} className="px-2 py-1 bg-red-600 text-white text-xs font-bold rounded animate-pulse">삭제?</button>
+              ) : (
+                <button onClick={() => deleteItem(item.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"><Trash2 size={16} /></button>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-gray-600 mb-4 text-sm">
+            <MapPin size={16} /><span>{item.location}</span>
+          </div>
+          <div className="flex items-center justify-between bg-gray-50 p-2 rounded-lg">
+            <span className="text-sm font-semibold text-gray-500 flex items-center gap-1"><Package size={16} /> 수량</span>
+            <div className="flex items-center gap-3">
+              <button onClick={() => adjustQuantity(item.id, item.quantity, -1)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border border-gray-200 text-gray-600 hover:border-indigo-500 hover:text-indigo-600 transition-colors shadow-sm"><Minus size={14} /></button>
+              <span className={`font-bold w-8 text-center ${item.quantity < 5 ? 'text-red-500' : 'text-gray-800'}`}>{item.quantity}</span>
+              <button onClick={() => adjustQuantity(item.id, item.quantity, 1)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border border-gray-200 text-gray-600 hover:border-indigo-500 hover:text-indigo-600 transition-colors shadow-sm"><Plus size={14} /></button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-6 font-sans relative">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-4 left-1/2 transform -translate-x-1/2 px-6 py-3 rounded-xl shadow-lg flex items-center gap-2 z-50 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-500 text-white' : 'bg-slate-800 text-white'}`}>
+          {toast.type === 'error' ? <AlertCircle size={20}/> : <Check size={20}/>}
+          <span className="font-bold">{toast.message}</span>
+        </div>
+      )}
+
+      <div className="max-w-5xl mx-auto">
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
+            <div>
+               <h1 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
+                <span className="bg-indigo-600 text-white p-2 rounded-lg"><TestTube size={24}/></span>
+                여울초 과학실 물품 검색
+               </h1>
+               <div className="flex items-center gap-2 mt-2">
+                 <p className="text-slate-500 ml-1">물품명, 위치, 또는 실험명을 검색하세요</p>
+                 {isOffline ? (
+                   <div className="px-2 py-0.5 rounded text-xs font-bold flex items-center gap-1 bg-gray-200 text-gray-600">
+                     <Database size={10}/> 오프라인 모드 (저장 안 됨)
+                   </div>
+                 ) : (
+                   <div className={`px-2 py-0.5 rounded text-xs font-bold flex items-center gap-1 ${loading ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+                     {loading ? <RefreshCw className="animate-spin" size={10}/> : <Database size={10}/>}
+                     {loading ? 'DB 연결중...' : '온라인 연동됨'}
+                   </div>
+                 )}
+               </div>
+            </div>
+            <div className="flex flex-wrap gap-2 bg-slate-100 p-1.5 rounded-xl self-start">
+               <button onClick={() => setActiveTab('search')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'search' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Search size={16}/> 검색</button>
+               <button onClick={() => setActiveTab('database')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'database' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Database size={16}/> 전체 DB</button>
+               <button onClick={() => setActiveTab('experiments')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'experiments' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Beaker size={16}/> 실험목록</button>
+               <button onClick={() => setActiveTab('loans')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'loans' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ClipboardList size={16}/> 대여 관리</button>
+            </div>
+          </div>
+        </div>
+
+        {activeTab === 'search' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <div className="flex flex-col md:flex-row gap-4 mb-4">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-600 min-w-fit"><Filter size={18} /> 필터:</div>
+                <div className="flex gap-2">
+                  <button onClick={() => setRoomFilter('all')} className={`px-4 py-2 rounded-full text-sm font-bold transition-colors border ${roomFilter === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>전체</button>
+                  <button onClick={() => setRoomFilter('1과학실')} className={`px-4 py-2 rounded-full text-sm font-bold transition-colors border ${roomFilter === '1과학실' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-green-50'}`}>1과학실</button>
+                  <button onClick={() => setRoomFilter('2과학실')} className={`px-4 py-2 rounded-full text-sm font-bold transition-colors border ${roomFilter === '2과학실' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-blue-50'}`}>2과학실</button>
+                </div>
+              </div>
+              <div className="relative mb-4">
+                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
+                <input type="text" placeholder="예: 비커, 1과교 1, 전기회로, 렌즈..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-12 pr-4 py-4 text-lg bg-slate-50 border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:bg-white focus:outline-none transition-all placeholder:text-slate-400" />
+              </div>
+              <button onClick={() => setShowAddForm(!showAddForm)} className="w-full py-3 border-2 border-dashed border-indigo-200 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors">
+                {showAddForm ? <X size={20}/> : <PlusCircle size={20}/>}{showAddForm ? '닫기' : '새 물품 직접 추가하기'}
+              </button>
+            </div>
+            {showAddForm && (
+              <div className="bg-white rounded-2xl shadow-lg border border-indigo-100 p-6 animate-fade-in-down">
+                <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><span className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600"><Plus size={18}/></span>새 물품 등록</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div className="space-y-1"><label className="text-sm font-semibold text-slate-500">물품명</label><input type="text" placeholder="예: 비커 500ml" value={newItem.item} onChange={(e) => setNewItem({ ...newItem, item: e.target.value })} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                  <div className="space-y-1"><label className="text-sm font-semibold text-slate-500">위치</label><input type="text" placeholder="예: 1과교 3" value={newItem.location} onChange={(e) => setNewItem({ ...newItem, location: e.target.value })} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                  <div className="space-y-1"><label className="text-sm font-semibold text-slate-500">보관 장소</label><select value={newItem.room} onChange={(e) => setNewItem({ ...newItem, room: e.target.value })} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white"><option value="1과학실">1과학실</option><option value="2과학실">2과학실</option></select></div>
+                  <div className="space-y-1"><label className="text-sm font-semibold text-slate-500">초기 수량</label><input type="number" placeholder="0" value={newItem.quantity} onChange={(e) => setNewItem({ ...newItem, quantity: parseInt(e.target.value) || 0 })} className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" /></div>
+                </div>
+                <div className="flex gap-3"><button onClick={addItem} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold transition-colors">등록하기</button><button onClick={() => { setShowAddForm(false); setNewItem({ location: '', item: '', quantity: 0, room: '2과학실' }); }} className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 py-3 rounded-xl font-bold transition-colors">취소</button></div>
+              </div>
+            )}
+            {searchTerm && searchResults.type !== 'none' ? (
+              <div className="animate-fade-in">
+                {searchResults.type === 'experiment' && (
+                  <div className="mb-6 bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-100 rounded-2xl p-6 shadow-sm">
+                    <div className="flex flex-col md:flex-row md:items-start gap-4">
+                      <div className="p-3 bg-white rounded-full shadow-sm text-purple-600"><Beaker size={32} /></div>
+                      <div className="flex-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-2"><h3 className="text-xl font-bold text-purple-900">{searchResults.data.experiment.name}</h3><span className="px-2 py-1 bg-purple-200 text-purple-800 text-xs font-bold rounded-full">{searchResults.data.experiment.grade}학년</span></div>
+                        <div className="bg-white/60 rounded-lg p-3 backdrop-blur-sm"><p className="text-sm font-semibold text-purple-800 mb-1">🔍 필요 실험 도구:</p><div className="flex flex-wrap gap-2">{searchResults.data.experiment.tools.map((tool, idx) => (<span key={idx} className="px-2 py-1 bg-white border border-purple-100 rounded-md text-sm text-purple-700 shadow-sm">{tool}</span>))}</div></div>
+                      </div>
                     </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between mb-4 px-1"><h2 className="text-lg font-bold text-slate-700 flex items-center gap-2">{searchResults.type === 'experiment' ? <><Package size={20}/> 관련 물품 위치</> : <><Search size={20}/> 검색 결과</>}<span className="ml-2 bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full text-sm">{searchResults.data.items?.length || searchResults.data.length}건</span></h2></div>
+                {((searchResults.data.items || searchResults.data).length > 0) ? (
+                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{(searchResults.data.items || searchResults.data).map((item) => (<InventoryCard key={item.id} item={item} highlight={true} />))}</div>
+                ) : (
+                  <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-300"><div className="text-slate-300 mb-3 mx-auto flex justify-center"><Package size={48}/></div><p className="text-slate-500 font-medium">검색된 물품이 없습니다.</p></div>
+                )}
+              </div>
+            ) : (!searchTerm && (<div className="text-center py-20 opacity-50"><div className="inline-block p-6 bg-white rounded-full shadow-sm mb-4"><Search size={48} className="text-indigo-200" /></div><h3 className="text-xl font-bold text-slate-400 mb-2">물품을 검색해보세요</h3><p className="text-slate-400">실험 이름이나 도구 이름을 입력하면<br/>위치와 재고를 알려드립니다.</p></div>))}
+          </div>
+        )}
+
+        {activeTab === 'database' && (
+          <div className="space-y-6 animate-fade-in">
+             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-6">
+                   <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Database size={24} className="text-indigo-600"/> 전체 물품 목록</h2>
+                   <div className="flex items-center gap-2">
+                      <button onClick={uploadInitialData} disabled={uploading || isOffline} className={`px-3 py-1.5 rounded-lg text-sm font-bold border flex items-center gap-1 mr-2 ${isOffline ? 'bg-gray-100 text-gray-400 border-gray-200' : 'bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100'}`}>
+                         {uploading ? <RefreshCw className="animate-spin" size={14}/> : <CloudUpload size={14}/>} 초기 데이터 업로드
+                      </button>
+                      <div className="flex gap-2">
+                        <button onClick={() => setRoomFilter('all')} className={`px-3 py-1.5 rounded-lg text-sm font-bold border ${roomFilter === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>전체</button>
+                        <button onClick={() => setRoomFilter('1과학실')} className={`px-3 py-1.5 rounded-lg text-sm font-bold border ${roomFilter === '1과학실' ? 'bg-green-600 text-white' : 'bg-white text-slate-600'}`}>1과학실</button>
+                        <button onClick={() => setRoomFilter('2과학실')} className={`px-3 py-1.5 rounded-lg text-sm font-bold border ${roomFilter === '2과학실' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600'}`}>2과학실</button>
+                      </div>
+                   </div>
                 </div>
-            );
-        };
+                {loading ? (<div className="py-20 text-center text-slate-400"><RefreshCw className="animate-spin mx-auto mb-2" size={32}/>데이터를 불러오는 중입니다...</div>) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{filteredInventory.map((item) => (<InventoryCard key={item.id} item={item} />))}{filteredInventory.length === 0 && (<div className="col-span-full text-center py-10 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">데이터가 없습니다. '초기 데이터 업로드' 버튼을 눌러주세요 (온라인 모드에서만 가능).</div>)}</div>
+                )}
+             </div>
+          </div>
+        )}
 
-        // --- Loan Modal Component ---
-        const LoanModal = ({ isOpen, item, onClose, onConfirm }) => {
-            const [borrower, setBorrower] = useState('');
-            const [quantity, setQuantity] = useState(1);
+        {activeTab === 'experiments' && (
+          <div className="space-y-6 animate-fade-in">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+               <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><Beaker size={24} className="text-indigo-600"/> 등록된 실험 목록</h2>
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                 {experiments.map((exp, idx) => (
+                   <button key={idx} onClick={() => { setSearchTerm(exp.name); setActiveTab('search'); }} className="flex flex-col text-left bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 rounded-xl p-5 transition-all group">
+                     <div className="flex justify-between items-start w-full mb-2"><h3 className="text-lg font-bold text-slate-700 group-hover:text-indigo-700">{exp.name}</h3><span className="text-xs font-bold bg-white text-slate-500 border border-slate-200 px-2 py-1 rounded-full group-hover:border-indigo-200 group-hover:text-indigo-600">{exp.grade}학년</span></div>
+                     <p className="text-sm text-slate-500 group-hover:text-slate-600">{exp.tools.join(', ')}</p>
+                   </button>
+                 ))}
+               </div>
+            </div>
+          </div>
+        )}
 
-            useEffect(() => {
-                if (isOpen) {
-                    setBorrower('');
-                    setQuantity(1);
-                }
-            }, [isOpen]);
+        {activeTab === 'loans' && (
+          <div className="space-y-6 animate-fade-in">
+            {/* 대여 입력 폼 */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+               <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                 <ClipboardList size={24} className="text-indigo-600"/> 대여 기록하기
+               </h2>
+               <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end bg-slate-50 p-4 rounded-xl">
+                 <div className="md:col-span-3 space-y-1">
+                   <label className="text-sm font-semibold text-slate-500 flex items-center gap-1"><User size={14}/> 대여자 이름</label>
+                   <input 
+                     type="text" 
+                     placeholder="예: 홍길동 (6-1)" 
+                     value={newLoan.borrower} 
+                     onChange={(e) => setNewLoan({...newLoan, borrower: e.target.value})} 
+                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" 
+                   />
+                 </div>
+                 <div className="md:col-span-5 space-y-1">
+                   <label className="text-sm font-semibold text-slate-500 flex items-center gap-1"><Package size={14}/> 물품 선택</label>
+                   <select 
+                     value={newLoan.itemId} 
+                     onChange={(e) => setNewLoan({...newLoan, itemId: e.target.value})}
+                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                   >
+                     <option value="">물품을 선택하세요</option>
+                     {inventory.map(item => (
+                       <option key={item.id} value={item.id}>{item.item} ({item.room}, {item.location}) - 잔여 {item.quantity}개</option>
+                     ))}
+                   </select>
+                 </div>
+                 <div className="md:col-span-2 space-y-1">
+                   <label className="text-sm font-semibold text-slate-500 flex items-center gap-1">수량</label>
+                   <input 
+                     type="number" 
+                     min="1"
+                     value={newLoan.quantity} 
+                     onChange={(e) => setNewLoan({...newLoan, quantity: parseInt(e.target.value) || 1})} 
+                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" 
+                   />
+                 </div>
+                 <div className="md:col-span-2">
+                   <button 
+                     onClick={addLoan}
+                     className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-1"
+                   >
+                     <PlusCircle size={18}/> 대여
+                   </button>
+                 </div>
+               </div>
+            </div>
 
-            if (!isOpen || !item) return null;
+            {/* 대여 중인 물품 리스트 */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+               <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                 <Clock size={20} className="text-orange-500"/> 대여 중인 물품 <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full text-xs">{activeLoans.length}건</span>
+               </h3>
+               {activeLoans.length > 0 ? (
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   {activeLoans.map(loan => (
+                     <div key={loan.id} className="border border-orange-200 bg-orange-50 rounded-xl p-4 flex flex-col justify-between">
+                       <div className="flex justify-between items-start mb-2">
+                         <div>
+                           <h4 className="font-bold text-slate-800">{loan.itemName}</h4>
+                           <span className="text-xs text-slate-500 bg-white px-2 py-0.5 rounded border border-orange-100">{loan.itemRoom || '과학실'}</span>
+                         </div>
+                         <div className="text-right">
+                           <span className="block font-bold text-indigo-700">{loan.borrower}</span>
+                           <span className="text-xs text-slate-500">{loan.quantity}개 대여</span>
+                         </div>
+                       </div>
+                       <div className="text-sm text-slate-600 mb-3 flex items-center gap-1">
+                         <Calendar size={14}/> {loan.borrowDate}
+                       </div>
+                       <button 
+                         onClick={() => returnLoan(loan.id)}
+                         className="w-full py-2 bg-white border border-orange-300 text-orange-600 hover:bg-orange-100 font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-sm"
+                       >
+                         <CheckCircle size={16}/> 반납 처리 (재고 자동 복구)
+                       </button>
+                     </div>
+                   ))}
+                 </div>
+               ) : (
+                 <div className="text-center py-8 text-slate-400">대여 중인 물품이 없습니다.</div>
+               )}
+            </div>
 
-            const handleConfirm = () => {
-                if (!borrower.trim()) {
-                    alert('대여자를 입력해주세요.');
-                    return;
-                }
-                if (quantity <= 0 || quantity > item.quantity) {
-                    alert('유효하지 않은 수량입니다.');
-                    return;
-                }
-                onConfirm(item, borrower, quantity);
-            };
+            {/* 반납 완료 내역 */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 opacity-80">
+               <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
+                 <History size={20} className="text-slate-400"/> 최근 반납 기록
+               </h3>
+               {returnedLoans.length > 0 ? (
+                 <div className="overflow-x-auto">
+                   <table className="w-full text-sm text-left text-slate-600">
+                     <thead className="text-xs text-slate-700 uppercase bg-slate-50">
+                       <tr>
+                         <th className="px-4 py-3 rounded-l-lg">물품명</th>
+                         <th className="px-4 py-3">대여자</th>
+                         <th className="px-4 py-3">대여일시</th>
+                         <th className="px-4 py-3 rounded-r-lg">반납일시</th>
+                       </tr>
+                     </thead>
+                     <tbody>
+                       {returnedLoans.slice(0, 10).map(loan => (
+                         <tr key={loan.id} className="border-b border-slate-100 hover:bg-slate-50">
+                           <td className="px-4 py-3 font-medium text-slate-800">{loan.itemName} <span className="text-xs text-slate-400">({loan.quantity}개)</span></td>
+                           <td className="px-4 py-3">{loan.borrower}</td>
+                           <td className="px-4 py-3 text-xs">{loan.borrowDate}</td>
+                           <td className="px-4 py-3 text-xs text-green-600 font-medium">{loan.returnDate}</td>
+                         </tr>
+                       ))}
+                     </tbody>
+                   </table>
+                 </div>
+               ) : (
+                 <div className="text-center py-4 text-slate-400">반납 기록이 없습니다.</div>
+               )}
+            </div>
+          </div>
+        )}
 
-            return (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in p-4">
-                    <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl">
-                        <h3 className="text-lg font-bold mb-1 text-slate-800 flex items-center gap-2">
-                            <ClipboardList className="text-indigo-600" /> 물품 대여
-                        </h3>
-                        <p className="text-sm text-slate-500 mb-4">{item.item} (현재고: {item.quantity})</p>
-                        
-                        <div className="space-y-4 mb-6">
-                            <div>
-                                <label className="text-xs font-bold text-slate-500 mb-1 block">대여자 (학생/선생님 성함)</label>
-                                <div className="relative">
-                                    <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                                    <input 
-                                        type="text" 
-                                        value={borrower} 
-                                        onChange={(e) => setBorrower(e.target.value)}
-                                        placeholder="예: 6-1 홍길동"
-                                        className="w-full pl-9 pr-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
-                                        autoFocus
-                                    />
-                                </div>
-                            </div>
-                            <div>
-                                <label className="text-xs font-bold text-slate-500 mb-1 block">대여 수량</label>
-                                <div className="flex items-center gap-2">
-                                    <button onClick={() => setQuantity(Math.max(1, quantity - 1))} className="p-2 border rounded hover:bg-slate-50"><Minus size={14}/></button>
-                                    <input 
-                                        type="number" 
-                                        value={quantity} 
-                                        onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
-                                        className="flex-1 text-center py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-bold"
-                                    />
-                                    <button onClick={() => setQuantity(Math.min(item.quantity, quantity + 1))} className="p-2 border rounded hover:bg-slate-50"><Plus size={14}/></button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="flex gap-3">
-                            <button onClick={onClose} className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-bold hover:bg-slate-200 transition-colors">취소</button>
-                            <button onClick={handleConfirm} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition-colors">대여하기</button>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        // --- Initial Data (전체 데이터 포함) ---
-        const initialInventory = [
-            { location: '1과교 안전보관함', item: '구급상자', quantity: 1, room: '1과학실' },
-            { location: '1과교 안전보관함', item: '방진마스크', quantity: 40, room: '1과학실' },
-            { location: '1과교 안전보관함', item: '눈세척기', quantity: 1, room: '1과학실' },
-            { location: '1과교 안전보관함', item: '방진포+방염수건', quantity: 1, room: '1과학실' },
-            { location: '1과교 안전보관함', item: '일회용마스크', quantity: 50, room: '1과학실' },
-            { location: '1과교 1', item: '내열장갑', quantity: 13, room: '1과학실' },
-            { location: '1과교 1', item: '면장갑', quantity: 20, room: '1과학실' },
-            { location: '1과교 1', item: '보안경(레이저용)', quantity: 30, room: '1과학실' },
-            { location: '1과교 1', item: '보안경(일반용)', quantity: 25, room: '1과학실' },
-            { location: '1과교 2', item: '라텍스실험용 장갑 S', quantity: 225, room: '1과학실' },
-            { location: '1과교 2', item: '라텍스실험용 장갑 M', quantity: 225, room: '1과학실' },
-            { location: '1과교 2', item: '커팅매트', quantity: 7, room: '1과학실' },
-            { location: '1과교 2', item: '멀티탭', quantity: 2, room: '1과학실' },
-            { location: '1과교 3', item: '색연필', quantity: 6, room: '1과학실' },
-            { location: '1과교 3', item: '싸인펜', quantity: 0, room: '1과학실' },
-            { location: '1과교 3', item: '딱풀', quantity: 0, room: '1과학실' },
-            { location: '1과교 3', item: '가위', quantity: 0, room: '1과학실' },
-            { location: '1과교 3', item: '자(30cm)', quantity: 0, room: '1과학실' },
-            { location: '1과교 3', item: '칼', quantity: 0, room: '1과학실' },
-            { location: '1과교 3', item: '목공풀', quantity: 0, room: '1과학실' },
-            { location: '1과교 3', item: '테이프(투명+전지)', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '도화지(4절)', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '투명종이', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '리본끈', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '할핀+똑딱단추', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '면실', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '모루', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '빨대', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '빵끈', quantity: 9, room: '1과학실' },
-            { location: '1과교 4', item: '색상지', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '색종이', quantity: 6, room: '1과학실' },
-            { location: '1과교 4', item: '수수깡', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '종이컵', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '칼라자갈(소형)', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '나무젓가락', quantity: 0, room: '1과학실' },
-            { location: '1과교 4', item: '이쑤시개', quantity: 0, room: '1과학실' },
-            { location: '1과교 5', item: '풍선 공기주입기', quantity: 0, room: '1과학실' },
-            { location: '1과교 5', item: 'OHP필름', quantity: 0, room: '1과학실' },
-            { location: '1과교 5', item: '셀로판지', quantity: 0, room: '1과학실' },
-            { location: '1과교 5', item: '스티로폼공(크기 다양)', quantity: 0, room: '1과학실' },
-            { location: '1과교 5', item: '일회용접시 지퍼백(일회용비닐봉지)', quantity: 0, room: '1과학실' },
-            { location: '1과교 6', item: '에어로켓제작 일부', quantity: 0, room: '1과학실' },
-            { location: '1과교 6', item: '태양고도측정기만들기세트', quantity: 0, room: '1과학실' },
-            { location: '1과교 6', item: '폐모형만들기세트', quantity: 0, room: '1과학실' },
-            { location: '1과교 6', item: '간이팔근육모형만들기세트', quantity: 0, room: '1과학실' },
-            { location: '1과교 6', item: '자석자동차투석기만들기', quantity: 0, room: '1과학실' },
-            { location: '1과교 7', item: '간이사진기만들기세트', quantity: 0, room: '1과학실' },
-            { location: '1과교 9', item: '클립보드', quantity: 0, room: '1과학실' },
-            { location: '1과교 9', item: '화이트보드판(대)', quantity: 0, room: '1과학실' },
-            { location: '1과교 9', item: '화이트보드판(중)', quantity: 0, room: '1과학실' },
-            { location: '1과교 11', item: '비커 250ml', quantity: 12, room: '1과학실' },
-            { location: '1과교 11', item: '비커 300ml', quantity: 24, room: '1과학실' },
-            { location: '1과교 11', item: '비커 500ml', quantity: 26, room: '1과학실' },
-            { location: '1과교 14', item: '비커 1L', quantity: 24, room: '1과학실' },
-            { location: '1과교 14', item: '비커 100ml', quantity: 21, room: '1과학실' },
-            { location: '1과교 13', item: '사각수조(대)', quantity: 10, room: '1과학실' },
-            { location: '1과교 15', item: '사각수조(소)', quantity: 8, room: '1과학실' },
-            { location: '1과교 16', item: '원형수조(대)', quantity: 5, room: '1과학실' },
-            { location: '1과준 18(상)', item: '삼각플라스크 100ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(상)', item: '삼각플라스크 250ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(상)', item: '가지달린 삼각플라스크 (기체발생 실험용)', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(상)', item: '둥근플라스크', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(하)', item: '막자사발(대)', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(하)', item: '막자사발(소)', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(하)', item: '증발접시', quantity: 0, room: '1과학실' },
-            { location: '1과준 18(하)', item: '철제스탠드 부품(링, 집게)', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '도가니집게', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '시험관집게(나무)', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '스포이트시약병 50ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '스포이트시약병 100ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '집기병 250ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '집기병 500ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '눈금실린더 200ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '눈금실린더 250ml', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '스포이트(유리)', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(상)', item: '스포이트(일회용)', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(하)', item: '시험관대', quantity: 0, room: '1과학실' },
-            { location: '1과준 19(하)', item: '뷰렛클램프', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(상)', item: '깔대기(유리+플라스틱)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(상)', item: '시험관대(가열용)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(상)', item: '시험관(유리)+시험관대', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(상)', item: '시험관(플라스틱)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(상)', item: '페트리접시(유리)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(상)', item: '페트리접시(플라스틱)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(하)', item: '연소실험촛대', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(하)', item: '아크릴통(연소실험용)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(하)', item: '아크릴통(긴 원형)', quantity: 0, room: '1과학실' },
-            { location: '1과준 20(하)', item: '아크릴통(여러가지 모양)', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(상)', item: '바이알병', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(상)', item: '알콜램프', quantity: 12, room: '1과학실' },
-            { location: '1과준 21(상)', item: '삼발이', quantity: 7, room: '1과학실' },
-            { location: '1과준 21(상)', item: '세라믹그물망', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(상)', item: '철판', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(상)', item: '유리판', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(하)', item: '염화코발트종이', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(하)', item: '시약포지', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(하)', item: '거름종이(원형)', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(하)', item: '초', quantity: 0, room: '1과학실' },
-            { location: '1과준 21(하)', item: '열전구(적외선전구)', quantity: 4, room: '1과학실' },
-            { location: '1과준 21(하)', item: '전기스탠드(갓없음)', quantity: 6, room: '1과학실' },
-            { location: '1과준 22(상)', item: '펌프(주입기,심장펌프작용)', quantity: 0, room: '1과학실' },
-            { location: '1과준 22(상)', item: '호흡운동실험모형', quantity: 6, room: '1과학실' },
-            { location: '1과준 22(상)', item: '진공실험장치', quantity: 6, room: '1과학실' },
-            { location: '1과준 22(상)', item: '전자저울', quantity: 8, room: '1과학실' },
-            { location: '1과준 23(상)', item: '태양전지판(해파리실험)', quantity: 0, room: '1과학실' },
-            { location: '1과준 23(상)', item: '과일전지만들기(전자시계, 멜로디버저, 아연판, 구리판)', quantity: 0, room: '1과학실' },
-            { location: '1과준 23(상)', item: '발광다이오드', quantity: 0, room: '1과학실' },
-            { location: '1과준 23(상)', item: '동전전지', quantity: 0, room: '1과학실' },
-            { location: '1과준 23(상)', item: '전도성테이프', quantity: 0, room: '1과학실' },
-            { location: '1과준 23(상)', item: '분무기', quantity: 0, room: '1과학실' },
-            { location: '1과준 23(상)', item: '유리병(크기 다양)', quantity: 0, room: '1과학실' },
-            { location: '1과준 24(상)', item: '전지끼우개', quantity: 0, room: '1과학실' },
-            { location: '1과준 24(상)', item: '집게전선', quantity: 0, room: '1과학실' },
-            { location: '1과준 24(상)', item: '간이스위치', quantity: 0, room: '1과학실' },
-            { location: '1과준 24(상)', item: '꼬마전구', quantity: 0, room: '1과학실' },
-            { location: '1과준 24(상)', item: '전자석만들기 재료', quantity: 0, room: '1과학실' },
-            { location: '1과준 24(상)', item: '전지', quantity: 0, room: '1과학실' },
-            { location: '1과준 25', item: '팔근육 모형', quantity: 0, room: '1과학실' },
-            { location: '1과준 25', item: '인체 모형', quantity: 0, room: '1과학실' },
-            { location: '1과준 26(상)', item: '실험복', quantity: 0, room: '1과학실' },
-            { location: '1과준 26(하)', item: '폐수보관통', quantity: 4, room: '1과학실' },
-            { location: '1과준 27(상)', item: '레이저포인터', quantity: 6, room: '1과학실' },
-            { location: '1과준 27(상)', item: '손전등', quantity: 6, room: '1과학실' },
-            { location: '1과준 27(상)', item: '오목렌즈', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(상)', item: '볼록렌즈(돋보기)', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(상)', item: '평면렌즈', quantity: 6, room: '1과학실' },
-            { location: '1과준 27(상)', item: '삼각프리즘', quantity: 6, room: '1과학실' },
-            { location: '1과준 27(상)', item: '빛의굴절실험배경판', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '유리막대', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '효모', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '디지털PH미터기', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '전자계산기', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '라디오펜치', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '초시계', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '향+성냥', quantity: 0, room: '1과학실' },
-            { location: '1과준 27(서랍)', item: '가스점화기', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(상)', item: '투명반구', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(상)', item: '태양고도측정기', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(상)', item: '볼록렌즈동전실험용 컵', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(상)', item: '레이저포인터스탠드', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(상)', item: '아크릴판(투명+검정)', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(상)', item: '알콜온도계', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '기체검체기', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '주사기', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: 'ㄱ자유리관', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '약숟가락+핀셋', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '고무마개(구멍X, 구멍O)', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '줄자', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '고무관', quantity: 0, room: '1과학실' },
-            { location: '1과준 28(서랍)', item: '가위(플라스틱용)', quantity: 0, room: '1과학실' },
-            { location: '1과준 29(하)', item: '지구의(자석용,자전+공전)', quantity: 5, room: '1과학실' },
-            { location: '1과준 29(하)', item: '지구+달 공전모형', quantity: 2, room: '1과학실' },
-            { location: '1과준 30(상)', item: '루페', quantity: 0, room: '1과학실' },
-            { location: '1과준 30(상)', item: '쌍안경', quantity: 0, room: '1과학실' },
-            { location: '1과준 30(상)', item: '청진기', quantity: 0, room: '1과학실' },
-            { location: '1과준 30(상)', item: '나침반', quantity: 0, room: '1과학실' },
-            { location: '1과준 30(상)', item: '막대자석', quantity: 0, room: '1과학실' },
-            { location: '1과준 30(상)', item: '자석(매미,팽이,고리)', quantity: 0, room: '1과학실' },
-            { location: '1과준', item: '태양 방위각 고도 측정기', quantity: 0, room: '1과학실' },
-            { location: '1과준', item: '암상자', quantity: 0, room: '1과학실' },
-            { location: '1과준', item: '과학상자', quantity: 0, room: '1과학실' },
-            { location: '1과준', item: '스탠드', quantity: 0, room: '1과학실' },
-            { location: '2과교 안전보관함', item: '구급상자', quantity: 1, room: '2과학실' },
-            { location: '2과교 안전보관함', item: '방진마스크', quantity: 40, room: '2과학실' },
-            { location: '2과교 안전보관함', item: '눈세척기', quantity: 1, room: '2과학실' },
-            { location: '2과교 안전보관함', item: '방진포', quantity: 1, room: '2과학실' },
-            { location: '2과교 안전보관함', item: '일회용마스크', quantity: 50, room: '2과학실' },
-            { location: '2과교 1', item: '내열장갑', quantity: 15, room: '2과학실' },
-            { location: '2과교 1', item: '보안경(일반용)', quantity: 30, room: '2과학실' },
-            { location: '2과교 2', item: '라텍스실험용 장갑 S', quantity: 300, room: '2과학실' },
-            { location: '2과교 2', item: '라텍스실험용 장갑 M', quantity: 600, room: '2과학실' },
-            { location: '2과교 3(상)', item: '색연필', quantity: 6, room: '2과학실' },
-            { location: '2과교 3(상)', item: '사인펜', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(상)', item: '풀', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(상)', item: '가위', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(상)', item: '유성매직', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(하)', item: '수수깡', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(하)', item: '빵끈', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(하)', item: '테이프', quantity: 0, room: '2과학실' },
-            { location: '2과교 3(하)', item: '실핀', quantity: 0, room: '2과학실' },
-            { location: '2과교 5(상)', item: '단열집만들기모형 여유분', quantity: 0, room: '2과학실' },
-            { location: '2과교 5(상)', item: '모래시계만들기 여유분', quantity: 0, room: '2과학실' },
-            { location: '2과교 5(상)', item: '절연테이프', quantity: 0, room: '2과학실' },
-            { location: '2과교 5(상)', item: '페트병2단분리 모형', quantity: 0, room: '2과학실' },
-            { location: '2과교 5(하)', item: '압축 원형 스티로폼 판', quantity: 0, room: '2과학실' },
-            { location: '2과교 5(하)', item: '원통형 막대모형', quantity: 0, room: '2과학실' },
-            { location: '2과교 6(상)', item: '블루투스피커', quantity: 9, room: '2과학실' },
-            { location: '2과교 6(상)', item: '소리굽쇠', quantity: 6, room: '2과학실' },
-            { location: '2과교 6(하)', item: '색모래, 자갈', quantity: 0, room: '2과학실' },
-            { location: '2과교 6(하)', item: '물빠짐실험장치', quantity: 0, room: '2과학실' },
-            { location: '2과교 7(상)', item: '물질막대(철, 나무, 고무, 플라스틱)', quantity: 0, room: '2과학실' },
-            { location: '2과교 7(상)', item: '자석에 붙는 여러가지 물체', quantity: 0, room: '2과학실' },
-            { location: '2과교 7(상)', item: '필름통', quantity: 0, room: '2과학실' },
-            { location: '2과교 7(상)', item: '막대자석(바늘자석용)', quantity: 0, room: '2과학실' },
-            { location: '2과교 7(하)', item: '방충망(배추흰나비)', quantity: 0, room: '2과학실' },
-            { location: '2과교 7(하)', item: '종이컵(실전화)', quantity: 0, room: '2과학실' },
-            { location: '2과교 8(상)', item: '혼합물의 분리 재료', quantity: 0, room: '2과학실' },
-            { location: '2과교 8(하)', item: '풍선+공기주입기', quantity: 0, room: '2과학실' },
-            { location: '2과교 8(하)', item: '플라스틱공, 털실, 이쑤시개', quantity: 0, room: '2과학실' },
-            { location: '2과교 10', item: '비커 200ml', quantity: 14, room: '2과학실' },
-            { location: '2과교 10', item: '비커 300ml', quantity: 15, room: '2과학실' },
-            { location: '2과교 10', item: '비커 500ml', quantity: 15, room: '2과학실' },
-            { location: '2과교 10', item: '비커 1000ml', quantity: 3, room: '2과학실' },
-            { location: '2과교 12', item: '비커 50ml', quantity: 40, room: '2과학실' },
-            { location: '2과교 12', item: '비커 100ml', quantity: 34, room: '2과학실' },
-            { location: '2과준 17(상)', item: '시험관(플라스틱)', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(상)', item: '시험관(유리)+받침대', quantity: 14, room: '2과학실' },
-            { location: '2과준 17(상)', item: '스포이트(일회용)', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(상)', item: '스포이트(유리)', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(상)', item: '페트리접시(플라스틱)', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(상)', item: '페트리접시(유리)', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '핀셋+약수저', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '수저+젓가락', quantity: 7, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '유리막대', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '초시계', quantity: 20, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '가스점화기+향', quantity: 3, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '클립+고무밴드', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '빨대, 플라스틱 숟가락', quantity: 0, room: '2과학실' },
-            { location: '2과준 17(서랍)', item: '멀티탭', quantity: 0, room: '2과학실' },
-            { location: '2과준 18(상)', item: '눈금실린더 100ml', quantity: 6, room: '2과학실' },
-            { location: '2과준 18(상)', item: '눈금실린더 250ml', quantity: 6, room: '2과학실' },
-            { location: '2과준 18(상)', item: '삼각플라스크 100ml', quantity: 9, room: '2과학실' },
-            { location: '2과준 18(상)', item: '삼각플라스크 250ml', quantity: 10, room: '2과학실' },
-            { location: '2과준 18(상)', item: '깔대기(유리)', quantity: 7, room: '2과학실' },
-            { location: '2과준 18(상)', item: '집기병 500ml', quantity: 6, room: '2과학실' },
-            { location: '2과준 18(상)', item: '집기병 250ml', quantity: 3, room: '2과학실' },
-            { location: '2과준 18(상)', item: '삼발이', quantity: 7, room: '2과학실' },
-            { location: '2과준 18(상)', item: '알콜램프+알코올', quantity: 6, room: '2과학실' },
-            { location: '2과준 18(상)', item: '세라믹그물망', quantity: 7, room: '2과학실' },
-            { location: '2과준 18(상)', item: '유리판', quantity: 0, room: '2과학실' },
-            { location: '2과준 18(상)', item: '증발접시', quantity: 0, room: '2과학실' },
-            { location: '2과준 18(상)', item: '막자사발', quantity: 7, room: '2과학실' },
-            { location: '2과준 18(상)', item: '시험관집게', quantity: 9, room: '2과학실' },
-            { location: '2과준 18(상)', item: '도가니집게', quantity: 6, room: '2과학실' },
-            { location: '2과준 18(하)', item: '깔대기받침대', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(상)', item: '필름통', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(상)', item: '바이알병(플라스틱)', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(상)', item: '바이알병 받침대', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(상)', item: '물약병 60ml', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(상)', item: '자석6종세트', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(상)', item: '돋보기', quantity: 29, room: '2과학실' },
-            { location: '2과준 19(상)', item: '알코올온도계(세워서 보관)', quantity: 0, room: '2과학실' },
-            { location: '2과준 19(하)', item: '광학현미경', quantity: 6, room: '2과학실' },
-            { location: '2과준 20(상)', item: '용수철저울', quantity: 0, room: '2과학실' },
-            { location: '2과준 20(상)', item: '대저울', quantity: 4, room: '2과학실' },
-            { location: '2과준 20(상)', item: '윗접시저울', quantity: 0, room: '2과학실' },
-            { location: '2과준 20(상)', item: '양팔저울', quantity: 0, room: '2과학실' },
-            { location: '2과준 20(상)', item: '힘의균형판', quantity: 0, room: '2과학실' },
-            { location: '2과준 20(상)', item: '핫플레이트', quantity: 6, room: '2과학실' },
-            { location: '2과준 20(하)', item: '실체현미경', quantity: 6, room: '2과학실' },
-            { location: '2과준 21(상)', item: '주부저울', quantity: 0, room: '2과학실' },
-            { location: '2과준 21(상)', item: '내부관찰용 주부저울', quantity: 0, room: '2과학실' },
-            { location: '2과준 21(상)', item: '전자저울', quantity: 6, room: '2과학실' },
-            { location: '2과준 21(상)', item: '계량컵+계량스푼', quantity: 0, room: '2과학실' },
-            { location: '2과준 21(서랍)', item: '페트병+공기주입마개', quantity: 15, room: '2과학실' },
-            { location: '2과준 21(서랍)', item: '송풍기(손펌프)', quantity: 25, room: '2과학실' },
-            { location: '2과준 21(하)', item: '폐수보관통', quantity: 4, room: '2과학실' },
-            { location: '2과준 22(상)', item: '수수께끼 상자', quantity: 1, room: '2과학실' },
-            { location: '2과준 22(상)', item: '플라스틱용기(여러가지모양)', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(상)', item: '컵(여러가지 모양-재질다양)', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(상)', item: '컵(여러가지 모양-유리)', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(상)', item: '나무막대, 플라스틱막대', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '식물도감', quantity: 6, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '눈가리개/안대', quantity: 30, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '주사기, 고무관', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '부채', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '공기주입마개(고무공)', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '주사위', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '공구(니퍼, 펜치, 롱노즈플라이 등)', quantity: 0, room: '2과학실' },
-            { location: '2과준 22(서랍)', item: '줄자', quantity: 5, room: '2과학실' },
-            { location: '2과준 23(상)', item: '별자리판+별자리사진', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '구름발생실험장치', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '24칸 홈판-산과염기', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '거즈', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '탈지면', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '색소+잉크(파란색)', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '비눗방울', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(상)', item: '모래시계', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(서랍)', item: '김장봉투(염색놀이)', quantity: 0, room: '2과학실' },
-            { location: '2과준 23(하)', item: '공기무게측정 플라스틱통', quantity: 6, room: '2과학실' },
-            { location: '2과준 24(상)', item: '플라스틱 컵', quantity: 0, room: '2과학실' },
-            { location: '2과준 24(상)', item: '헤어드라이기', quantity: 5, room: '2과학실' },
-            { location: '2과준 24(상)', item: '달걀/계란 찜기', quantity: 1, room: '2과학실' },
-            { location: '2과준 24(상)', item: '컵홀더', quantity: 18, room: '2과학실' },
-            { location: '2과준 24(상)', item: '프레파라트(영구용) -해캄, 짚신벌레, 곰팡이, 양파표피세포,식물', quantity: 0, room: '2과학실' },
-            { location: '2과준 24(상)', item: '거름종이(막대형+원형)', quantity: 0, room: '2과학실' },
-            { location: '2과준 24(상)', item: '시약포지', quantity: 0, room: '2과학실' },
-            { location: '2과준 24(상)', item: '리트머스종이', quantity: 0, room: '2과학실' },
-            { location: '2과준 24(상)', item: '알루미늄캔', quantity: 0, room: '2과학실' },
-            { location: '2과준 24(상)', item: '열변색물감', quantity: 7, room: '2과학실' },
-            { location: '2과준 24(상)', item: '시온스티커 세트', quantity: 6, room: '2과학실' },
-            { location: '2과준 24(상)', item: '판(구리,철,유리)', quantity: 7, room: '2과학실' },
-            { location: '2과준 24(상)', item: '막대(구리,철,유리)', quantity: 12, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '디지털온도계', quantity: 7, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '탐침온도계', quantity: 4, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '액정온도계', quantity: 15, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '적외선온도계', quantity: 9, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '건습구습도계', quantity: 11, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '모발습도계', quantity: 1, room: '2과학실' },
-            { location: '2과준 24(서랍)', item: '디지털습도계', quantity: 2, room: '2과학실' },
-            { location: '2과준 24(하)', item: '열전구(적외선전구)', quantity: 8, room: '2과학실' },
-            { location: '2과준 24(하)', item: '전기스탠드(갓없음)', quantity: 4, room: '2과학실' },
-            { location: '2과준 24(하)', item: '전기스탠드(갓있음)', quantity: 6, room: '2과학실' },
-            { location: '2과준 25(상)', item: '건조기', quantity: 1, room: '2과학실' },
-            { location: '2과준 25(상)', item: '분리체', quantity: 13, room: '2과학실' },
-            { location: '2과준 25(상)', item: '나침반', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(상)', item: '물체 받침대', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(상)', item: '거울+그림자놀이실험 (손전등, 거울)', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(상)', item: '추(무게별)', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(상)', item: '용수철', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(상)', item: '도꼬마리+벨크로', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(상)', item: '그림자 스크린(액자식)', quantity: 8, room: '2과학실' },
-            { location: '2과준 25(서랍)', item: '쿠킹호일, 어둠상자', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(서랍)', item: '얼음주머니', quantity: 6, room: '2과학실' },
-            { location: '2과준 25(하)', item: '퇴적암만들기실험세트', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(하)', item: '화산만들기실험세트', quantity: 0, room: '2과학실' },
-            { location: '2과준 25(하)', item: '물의순환과정실험세트', quantity: 0, room: '2과학실' },
-            { location: '2과준 26(상)', item: '단층모형', quantity: 6, room: '2과학실' },
-            { location: '2과준 26(상)', item: '화석세트', quantity: 6, room: '2과학실' },
-            { location: '2과준 26(상)', item: '화석, 광물 표본', quantity: 9, room: '2과학실' },
-            { location: '2과준 26(상)', item: '암석표본 (현무암,화성암,화강암,석회암,사암,이암,역암)', quantity: 16, room: '2과학실' },
-            { location: '2과준 26(상)', item: '꽃삽, 모종삽', quantity: 2, room: '2과학실' },
-            { location: '2과준 26(상)', item: '사각 쟁반', quantity: 5, room: '2과학실' },
-            { location: '2과준 26(서랍)', item: 'MSDS대장', quantity: 0, room: '2과학실' },
-            { location: '2과준', item: '지구본', quantity: 6, room: '2과학실' },
-            { location: '2과준', item: '원형수조(대)', quantity: 11, room: '2과학실' },
-            { location: '2과준', item: '원형수조(소)', quantity: 12, room: '2과학실' },
-            { location: '2과준', item: '스탠드', quantity: 7, room: '2과학실' },
-            { location: '2과준', item: '대류상자', quantity: 6, room: '2과학실' },
-            { location: '식약장 상(좌)', item: '묽은 염산', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(좌)', item: '붕사', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(좌)', item: '가루물질(설탕,소금,멸치가루)', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '식초', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '유리세정제', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '구연산(시트르산)', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '감자전분', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '식용유', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '페놀프탈레인용액', quantity: 0, room: '2과학실' },
-            { location: '식약장 상(우)', item: '얼음설탕', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(좌)', item: '이산화망가니즈', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(좌)', item: '대리석', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(좌)', item: '폴리비닐알콜', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(좌)', item: '백반', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(좌)', item: '탄산수소나트륨', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(우)', item: '석회수', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(우)', item: '묽은 수산화나트륨', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(우)', item: '과산화수소수', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(우)', item: '아이오딘화칼륨(용액)', quantity: 0, room: '2과학실' },
-            { location: '식약장 하(우)', item: '아이오딘화칼륨(가루)', quantity: 0, room: '2과학실' }
-        ];
-
-        // --- Experiments Data ---
-        const experiments = [
-            { name: '단원 평가', grade: '3-6', tools: ['스티커', '가위'] },
-            { name: '나침반 만들기', grade: '3', tools: ['나침반', '막대자석'] },
-            { name: '자석 놀이', grade: '3', tools: ['막대자석', '자석6종세트'] },
-            { name: '그림자 관찰', grade: '3', tools: ['손전등', '스탠드'] },
-            { name: '액체 관찰', grade: '4', tools: ['비커', '스포이트', '페트리접시'] },
-            { name: '혼합물 분리', grade: '4', tools: ['비커', '깔대기', '거름종이', '유리막대'] },
-            { name: '용해와 용액', grade: '5', tools: ['비커', '유리막대', '스포이트', '페트리접시'] },
-            { name: '산과 염기', grade: '5', tools: ['비커', 'PH미터기', '스포이트', '시험관'] },
-            { name: '전기회로', grade: '6', tools: ['전지', '전지끼우개', '집게전선', '꼬마전구', '스위치'] },
-            { name: '전자석', grade: '6', tools: ['전자석만들기 재료', '전지', '나침반'] },
-            { name: '렌즈', grade: '6', tools: ['볼록렌즈', '오목렌즈', '평면렌즈', '레이저포인터'] },
-            { name: '빛의 굴절', grade: '6', tools: ['삼각프리즘', '레이저포인터', '볼록렌즈'] },
-            { name: '연소', grade: '6', tools: ['알콜램프', '삼발이', '세라믹그물망', '비커', '집기병'] },
-            { name: '기체 발생', grade: '6', tools: ['삼각플라스크', '시험관', '고무마개', 'ㄱ자유리관', '집기병'] },
-            { name: '현미경 관찰', grade: '6', tools: ['광학현미경', '페트리접시', '슬라이드글라스', '스포이트'] },
-            { name: '호흡', grade: '6', tools: ['호흡운동실험모형', '폐모형'] },
-            { name: '심장', grade: '6', tools: ['펌프', '청진기'] },
-            { name: '뼈와 근육', grade: '6', tools: ['인체모형', '팔근육모형'] },
-            { name: '용수철', grade: '5', tools: ['용수철', '무게추', '자'] },
-            { name: '온도계', grade: '3-6', tools: ['알코올온도계', '디지털온도계'] },
-            { name: '태양 관찰', grade: '6', tools: ['태양고도측정기', '나침반'] },
-            { name: '지구와 달', grade: '6', tools: ['지구의', '지구+달 공전모형'] },
-            { name: '물의 상태변화', grade: '3', tools: ['비커', '알콜램프', '삼발이', '온도계'] },
-            { name: '물체의 무게', grade: '3', tools: ['전자저울', '용수철저울'] },
-            { name: '자석', grade: '3', tools: ['막대자석', '자석6종세트', '나침반'] }
-        ];
-
-        const App = () => {
-            // Firebase & State
-            const [user, setUser] = useState(null);
-            const [db, setDb] = useState(null);
-            const [appId, setAppId] = useState(null);
-            
-            // UI State
-            const [activeTab, setActiveTab] = useState('search');
-            const [searchTerm, setSearchTerm] = useState('');
-            const [showAddForm, setShowAddForm] = useState(false);
-            const [editingId, setEditingId] = useState(null);
-            const [newItem, setNewItem] = useState({ location: '', item: '', quantity: 0, room: '2과학실' });
-            const [editItemData, setEditItemData] = useState({});
-            const [roomFilter, setRoomFilter] = useState('all');
-            const [inventory, setInventory] = useState([]);
-            const [loans, setLoans] = useState([]); 
-            const [loading, setLoading] = useState(true);
-            const [uploading, setUploading] = useState(false);
-            const [isOffline, setIsOffline] = useState(false);
-            const [isLocalMode, setIsLocalMode] = useState(false); // 로컬 데이터 모드 (DB비었을때)
-            const [connectionError, setConnectionError] = useState(null);
-            
-            // Gemini State
-            const [geminiModal, setGeminiModal] = useState({ isOpen: false, title: '', content: '', isLoading: false });
-            
-            // Modal & Toast State
-            const [toast, setToast] = useState(null); 
-            // Unified confirmation modal state: stores context for the action (delete or return)
-            const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', data: null });
-            const [loanModal, setLoanModal] = useState({ isOpen: false, item: null });
-
-            const showToast = (message, type = 'success') => setToast({ message, type });
-
-            // --- Initialization ---
-            useEffect(() => {
-                const initFirebase = async () => {
-                    try {
-                        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-                        const currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
-                        setAppId(currentAppId);
-
-                        if (firebaseConfig) {
-                            const app = initializeApp(firebaseConfig);
-                            const auth = getAuth(app);
-                            const firestore = getFirestore(app);
-                            setDb(firestore);
-
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await signInWithCustomToken(auth, __initial_auth_token);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
-                            onAuthStateChanged(auth, setUser);
-                        } else {
-                            setIsOffline(true);
-                            setInventory(initialInventory); // 오프라인 시 로컬 데이터 즉시 사용
-                            setIsLocalMode(true);
-                            setLoading(false);
-                        }
-                    } catch (err) {
-                        console.error("Init Error:", err);
-                        setIsOffline(true);
-                        setInventory(initialInventory); // 에러 시 로컬 데이터 즉시 사용
-                        setIsLocalMode(true);
-                        setLoading(false);
-                    }
-                };
-                initFirebase();
-            }, []);
-
-            // --- Data Sync (Inventory & Loans) ---
-            useEffect(() => {
-                if (!user || !db || !appId) return;
-
-                // Inventory Listener
-                const invRef = collection(db, 'artifacts', appId, 'public', 'data', 'inventory');
-                const unsubInv = onSnapshot(invRef, (snapshot) => {
-                    if (snapshot.empty) {
-                        setInventory(initialInventory);
-                        setIsLocalMode(true);
-                        setLoading(false);
-                    } else {
-                        const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                        items.sort((a, b) => {
-                            if (a.room !== b.room) return a.room.localeCompare(b.room);
-                            return a.item.localeCompare(b.item);
-                        });
-                        setInventory(items);
-                        setIsLocalMode(false);
-                        setLoading(false);
-                    }
-                }, (error) => {
-                    console.error("Inventory Fetch Error:", error);
-                    setInventory(initialInventory);
-                    setIsLocalMode(true);
-                    setLoading(false);
-                });
-
-                // Loans Listener
-                const loansRef = collection(db, 'artifacts', appId, 'public', 'data', 'loans');
-                const unsubLoans = onSnapshot(loansRef, (snapshot) => {
-                    const loanItems = snapshot.docs.map(doc => {
-                        const data = doc.data();
-                        return {
-                            id: doc.id,
-                            status: data.status || 'active', // Missing status defaults to active
-                            ...data 
-                        };
-                    });
-                    
-                    // 정렬: 1. 상태 (active가 먼저) 2. 날짜 (최신순)
-                    loanItems.sort((a, b) => {
-                        // 'active'는 -1, 'returned'는 1을 리턴하여 active가 먼저 오게 함
-                        if (a.status !== b.status) {
-                            return a.status === 'returned' ? 1 : -1; 
-                        }
-                        return (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0);
-                    });
-                    
-                    setLoans(loanItems);
-                }, (error) => {
-                    console.log("Loans fetch error (expected if offline)", error);
-                });
-
-                return () => { unsubInv(); unsubLoans(); };
-            }, [user, db, appId]);
-
-            // --- Gemini API Logic (Callbacks) ---
-
-            const analyzeExperiment = useCallback(async (expName, tools) => {
-                setGeminiModal({ isOpen: true, title: `실험 '${expName}' 정보 분석`, content: '', isLoading: true });
-
-                const toolList = tools.join(', ');
-                const prompt = `당신은 초등학교 과학 교육 전문가입니다. 다음 실험 '${expName}'에 대해 다음 정보를 분석하여 제공해 주세요. 초등 교사에게 도움이 될 수 있도록 자세하고 친절하게 설명해 주세요.
-                1. 실험의 주요 목표 (초등 교육 과정 연계)
-                2. 예상 난이도 (3~6학년 기준)
-                3. 반드시 필요한 준비물: ${toolList}
-                4. 실험 시 가장 중요한 안전 및 주의 사항.
-                5. 결과를 쉽게 이해하는 방법이나 팁.
-                `;
-
-                try {
-                    const response = await fetchWithRetry(API_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts: [{ text: prompt }] }],
-                            systemInstruction: { parts: [{ text: "당신은 초등학교 과학 실험을 돕는 친절하고 전문적인 AI 어시스턴트입니다. 응답은 한국어로 Markdown 형식으로 제공하며, 핵심 내용만 간결하고 명확하게 작성하십시오." }] },
-                            tools: [{ "google_search": {} }],
-                        })
-                    });
-
-                    const text = response.candidates?.[0]?.content?.parts?.[0]?.text || "정보를 불러오지 못했습니다.";
-                    setGeminiModal(prev => ({ ...prev, content: text, isLoading: false }));
-
-                } catch (error) {
-                    console.error("Gemini API Error:", error);
-                    setGeminiModal(prev => ({ 
-                        ...prev, 
-                        content: `분석 실패: API 연결에 문제가 발생했거나, 정보를 찾지 못했습니다. (${error.message})`, 
-                        isLoading: false 
-                    }));
-                }
-            }, []);
-
-            const analyzeSafety = useCallback(async (itemName, location) => {
-                setGeminiModal({ isOpen: true, title: `물품 '${itemName}' 안전 정보`, content: '', isLoading: true });
-
-                const prompt = `당신은 초등학교 과학실 안전 관리 전문가입니다. 물품 '${itemName}'에 대해 초등 교사가 반드시 알아야 할 다음 안전 정보를 분석하여 제공해 주세요. 
-                1. 위험 등급 (1~4단계, 4단계가 가장 위험) 및 주요 위험 요소.
-                2. 보관 위치 (${location})의 적절성 평가 (예: 잠금 필요, 온도/습도 고려).
-                3. 취급 시 반드시 필요한 보호 장구 (예: 보안경, 장갑).
-                4. 폐기 방법 또는 사고 시 대처 요령.
-                `;
-
-                try {
-                    const response = await fetchWithRetry(API_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts: [{ text: prompt }] }],
-                            systemInstruction: { parts: [{ text: "당신은 초등학교 과학 실험을 돕는 친절하고 전문적인 AI 어시스턴트입니다. 응답은 한국어로 Markdown 형식으로 제공하며, 핵심 내용만 간결하고 명확하게 작성하십시오." }] },
-                            tools: [{ "google_search": {} }],
-                        })
-                    });
-
-                    const text = response.candidates?.[0]?.content?.parts?.[0]?.text || "정보를 불러오지 못했습니다.";
-                    setGeminiModal(prev => ({ ...prev, content: text, isLoading: false }));
-
-                } catch (error) {
-                    console.error("Gemini API Error:", error);
-                    setGeminiModal(prev => ({ 
-                        ...prev, 
-                        content: `분석 실패: API 연결에 문제가 발생했거나, 정보를 찾지 못했습니다. (${error.message})`, 
-                        isLoading: false 
-                    }));
-                }
-            }, []);
-
-            // --- Data Management Logic ---
-
-            const findToolsForExperiment = (term) => {
-                const normalizedTerm = term.toLowerCase().replace(/\s+/g, '');
-                
-                const exp = experiments.find(e => {
-                    const normName = e.name.toLowerCase().replace(/\s+/g, '');
-                    const hasTool = e.tools.some(t => t.toLowerCase().includes(normalizedTerm));
-                    return normName.includes(normalizedTerm) || hasTool;
-                });
-                
-                if (!exp) return null;
-                
-                const foundItems = [];
-                exp.tools.forEach(tool => {
-                    const matches = inventory.filter(item => 
-                        (item.item || '').toLowerCase().includes(tool.toLowerCase()) || 
-                        tool.toLowerCase().includes((item.item || '').toLowerCase())
-                    );
-                    foundItems.push(...matches);
-                });
-                const uniqueItems = Array.from(new Set(foundItems.map(a => a.id))).map(id => foundItems.find(a => a.id === id));
-                return { experiment: exp, items: uniqueItems };
-            };
-
-            const searchResults = useMemo(() => {
-                if (!searchTerm.trim()) return { type: 'none', data: [] };
-                
-                const term = searchTerm.toLowerCase();
-                const expResult = findToolsForExperiment(searchTerm);
-
-                const stringMatches = inventory.filter(item => {
-                    if (roomFilter !== 'all' && item.room !== roomFilter) return false;
-                    const iName = (item.item || '').toLowerCase();
-                    const iLoc = (item.location || '').toLowerCase();
-                    return iName.includes(term) || iLoc.includes(term);
-                });
-
-                if (expResult) {
-                    const combinedItems = [...expResult.items];
-                    const existingIds = new Set(combinedItems.map(i => i.id));
-                    stringMatches.forEach(item => {
-                        if (!existingIds.has(item.id)) {
-                            combinedItems.push(item);
-                        }
-                    });
-                    const finalItems = combinedItems.filter(item => roomFilter === 'all' || item.room === roomFilter);
-                    return { 
-                        type: 'experiment', 
-                        data: { 
-                            experiment: expResult.experiment, 
-                            items: finalItems 
-                        } 
-                    };
-                }
-
-                return { type: 'items', data: stringMatches };
-            }, [searchTerm, inventory, roomFilter]);
-
-            const filteredInventory = useMemo(() => {
-                if (roomFilter === 'all') return inventory;
-                return inventory.filter(item => item.room === roomFilter);
-            }, [inventory, roomFilter]);
-
-            // --- Unified Confirmation Handler ---
-
-            const handleGeneralConfirm = async () => {
-                const { action, id, loan } = confirmModal.data;
-                setConfirmModal({ isOpen: false, message: '', data: null });
-            
-                if (!user || !db || isOffline) return; // Basic online check
-
-                if (action === 'delete') {
-                    // Deletion Logic
-                    if (isLocalMode) return showToast("로컬 모드에서는 DB 삭제가 불가능합니다.", "error");
-
-                    try {
-                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'inventory', id));
-                        showToast("물품이 삭제되었습니다.");
-                    } catch (e) { showToast("삭제 실패: " + e.message, "error"); }
-
-                } else if (action === 'return' && loan) {
-                    // Return Logic
-                    try {
-                        const batch = writeBatch(db);
-                        
-                        // 1. 상태 업데이트
-                        const loanRef = doc(db, 'artifacts', appId, 'public', 'data', 'loans', loan.id);
-                        batch.update(loanRef, {
-                            status: 'returned',
-                            returnedAt: serverTimestamp()
-                        });
-
-                        // 2. 재고 복구
-                        const invItem = inventory.find(i => i.id === loan.itemId);
-                        if (invItem) {
-                            const itemRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', loan.itemId);
-                            batch.update(itemRef, { quantity: (invItem.quantity || 0) + loan.quantity });
-                        }
-
-                        await batch.commit();
-                        showToast("반납 처리가 완료되었습니다.");
-                    } catch (e) {
-                        console.error("Return Error:", e);
-                        showToast("반납 처리 실패: " + e.message, "error");
-                    }
-                }
-            };
-
-            // --- Actions (CRUD and Loan Logic) ---
-            const addItem = async () => {
-                if (newItem.item && newItem.location) {
-                    if (user && db && !isOffline && !isLocalMode) {
-                        try {
-                            const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'inventory');
-                            await addDoc(collectionRef, newItem);
-                            showToast("물품이 등록되었습니다.");
-                        } catch (e) { showToast("저장 실패: " + e.message, "error"); return; }
-                    } else {
-                        setInventory(prev => [...prev, { ...newItem, id: Date.now().toString() }]);
-                        showToast("로컬 모드: 임시 등록됨 (새로고침 시 사라짐)", "info");
-                    }
-                    setNewItem({ location: '', item: '', quantity: 0, room: '2과학실' });
-                    setShowAddForm(false);
-                } else { showToast("필수 정보를 입력해주세요.", "error"); }
-            };
-
-            const handleDeleteClick = (id) => { 
-                if (isLocalMode) {
-                    setInventory(prev => prev.filter(item => item.id !== id));
-                    return showToast("로컬 모드: 삭제됨 (새로고침 시 복구됨)", "info");
-                }
-                setConfirmModal({ 
-                    isOpen: true, 
-                    message: '이 물품을 삭제하시겠습니까? (DB 영구 삭제)', 
-                    data: { action: 'delete', id: id } 
-                });
-            };
-
-            const adjustQuantity = async (id, currentQty, delta) => {
-                const newQty = Math.max(0, (currentQty || 0) + delta);
-                if (user && db && !isOffline && !isLocalMode) {
-                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'inventory', id), { quantity: newQty });
-                } else {
-                    setInventory(prev => prev.map(item => item.id === id ? { ...item, quantity: newQty } : item));
-                }
-            };
-
-            const saveEditing = async (id) => {
-                if (user && db && !isOffline && !isLocalMode) {
-                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'inventory', id), editItemData);
-                    showToast("수정되었습니다.");
-                } else {
-                    setInventory(prev => prev.map(item => item.id === id ? editItemData : item));
-                    showToast("로컬 모드: 수정됨 (새로고침 시 복구됨)", "info");
-                }
-                setEditingId(null);
-            };
-
-            const openLoanModal = (item) => {
-                if (isLocalMode) { showToast("데이터 초기화(업로드) 후에 대여가 가능합니다.", "error"); return; }
-                if (item.quantity <= 0) { showToast("재고가 부족하여 대여할 수 없습니다.", "error"); return; }
-                setLoanModal({ isOpen: true, item });
-            };
-
-            const handleLoanConfirm = async (item, borrower, quantity) => {
-                if (!user || !db || isOffline || isLocalMode) {
-                    showToast("온라인 모드에서만 대여가 가능합니다.", "error");
-                    setLoanModal({ isOpen: false, item: null });
-                    return;
-                }
-
-                try {
-                    const batch = writeBatch(db);
-                    const loanRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'loans'));
-                    batch.set(loanRef, {
-                        itemId: item.id,
-                        itemName: item.item,
-                        borrower: borrower,
-                        quantity: quantity,
-                        location: item.location,
-                        timestamp: serverTimestamp(),
-                        status: 'active'
-                    });
-                    const itemRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', item.id);
-                    batch.update(itemRef, { quantity: item.quantity - quantity });
-                    await batch.commit();
-                    showToast(`${borrower}님에게 ${quantity}개 대여 완료`);
-                } catch (e) {
-                    console.error(e);
-                    showToast("대여 처리 중 오류가 발생했습니다.", "error");
-                }
-                setLoanModal({ isOpen: false, item: null });
-            };
-
-            const handleReturn = (loan) => {
-                if (loan.status === 'returned') return;
-                
-                // Custom modal flow
-                setConfirmModal({
-                    isOpen: true,
-                    message: `${loan.borrower}님의 [${loan.itemName}] 반납 처리를 하시겠습니까?`,
-                    data: { action: 'return', loan: loan }
-                });
-            };
-
-            const uploadInitialData = async () => {
-                if (!user || !db || isOffline) return;
-                setUploading(true);
-                try {
-                    const batch = writeBatch(db);
-                    initialInventory.forEach(item => {
-                        const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'inventory'));
-                        batch.set(docRef, item);
-                    });
-                    await batch.commit();
-                    showToast("초기 데이터 업로드 완료 (이제 대여 기능 사용 가능)");
-                    setIsLocalMode(false);
-                } catch (e) { 
-                    // 에러 메시지를 사용자에게 명확하게 전달
-                    showToast(`업로드 오류: ${e.message}`, "error"); 
-                }
-                finally { setUploading(false); }
-            };
-
-            const downloadExcel = () => {
-                if (inventory.length === 0) { showToast("데이터 없음", "error"); return; }
-                const headers = ['과학실', '위치', '물품명', '수량'];
-                const rows = inventory.map(item => [item.room, item.location, item.item, item.quantity]);
-                const csvContent = [headers.join(','), ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))].join('\n');
-                const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.setAttribute('download', `재고현황_${new Date().toLocaleDateString()}.csv`);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            };
-
-            // --- Render Components ---
-            const InventoryCard = ({ item, highlight = false }) => (
-                <div key={item.id} className={`bg-white rounded-xl shadow-sm border-l-4 p-5 transition-all hover:shadow-md ${item.room === '1과학실' ? 'border-green-500' : 'border-blue-500'} ${highlight ? 'ring-2 ring-indigo-200' : ''}`}>
-                    {editingId === item.id ? (
-                        <div className="space-y-3 animate-fade-in">
-                            {/* Editing Form (간략화) */}
-                            <input type="text" value={editItemData.item} onChange={(e) => setEditItemData({...editItemData, item: e.target.value})} className="w-full border p-1 rounded mb-1" />
-                            <div className="flex gap-2">
-                                <input type="text" value={editItemData.location} onChange={(e) => setEditItemData({...editItemData, location: e.target.value})} className="flex-1 border p-1 rounded" />
-                                <input type="number" value={editItemData.quantity} onChange={(e) => setEditItemData({...editItemData, quantity: parseInt(e.target.value)})} className="w-16 border p-1 rounded" />
-                            </div>
-                            <div className="flex gap-2">
-                                <button onClick={() => saveEditing(item.id)} className="flex-1 bg-green-600 text-white py-1 rounded text-xs">저장</button>
-                                <button onClick={() => setEditingId(null)} className="flex-1 bg-gray-200 text-gray-700 py-1 rounded text-xs">취소</button>
-                            </div>
-                        </div>
-                    ) : (
-                        <>
-                            <div className="flex justify-between items-start mb-2">
-                                <div>
-                                    <span className={`inline-block px-2 py-1 rounded text-xs font-bold mb-1 ${item.room === '1과학실' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>{item.room}</span>
-                                    <h3 className="text-lg font-bold text-gray-800 break-keep">{item.item}</h3>
-                                </div>
-                                <div className="flex gap-1">
-                                    <button onClick={() => { setEditingId(item.id); setEditItemData({...item}); }} className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full"><Edit2 size={16} /></button>
-                                    <button onClick={() => handleDeleteClick(item.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full"><Trash2 size={16} /></button>
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-2 text-gray-600 mb-4 text-sm">
-                                <MapPin size={16} /><span>{item.location}</span>
-                            </div>
-                            <div className="flex items-center justify-between bg-gray-50 p-2 rounded-lg">
-                                <span className="text-sm font-semibold text-gray-500 flex items-center gap-1"><Package size={16} /> 수량</span>
-                                <div className="flex items-center gap-3">
-                                    <button onClick={() => adjustQuantity(item.id, item.quantity, -1)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border hover:border-indigo-500"><Minus size={14} /></button>
-                                    <span className={`font-bold w-8 text-center ${item.quantity < 5 ? 'text-red-500' : 'text-gray-800'}`}>{item.quantity}</span>
-                                    <button onClick={() => adjustQuantity(item.id, item.quantity, 1)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border hover:border-indigo-500"><Plus size={14} /></button>
-                                </div>
-                            </div>
-                            {/* Gemini API Safety Feature */}
-                            {item.item.includes('염산') || item.item.includes('과산화수소수') || item.item.includes('시약') ? (
-                                <button 
-                                    onClick={() => analyzeSafety(item.item, item.location)}
-                                    className={`w-full mt-3 py-2 text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 bg-red-100 text-red-600 hover:bg-red-200 ${isLocalMode ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                    disabled={isLocalMode}
-                                >
-                                    <Sparkles size={16}/> ✨ 안전 정보 분석 (위험 물품)
-                                </button>
-                            ) : (
-                                <button 
-                                    onClick={() => openLoanModal(item)}
-                                    className={`w-full mt-3 py-2 font-bold rounded-lg transition-colors flex items-center justify-center gap-2 text-sm ${isLocalMode ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}
-                                    disabled={isLocalMode}
-                                >
-                                    <ClipboardList size={16}/> 대여하기
-                                </button>
-                            )}
-                        </>
-                    )}
-                </div>
-            );
-
-            return (
-                <div className="min-h-screen bg-slate-50 p-4 md:p-6 font-sans">
-                    <div className="max-w-5xl mx-auto">
-                        <Toast message={toast?.message} type={toast?.type} onClose={() => setToast(null)} />
-                        <ConfirmModal 
-                            isOpen={confirmModal.isOpen} 
-                            message={confirmModal.message} 
-                            onConfirm={handleGeneralConfirm} 
-                            onCancel={() => setConfirmModal({isOpen: false, message: '', data: null})} 
-                        />
-                        <LoanModal isOpen={loanModal.isOpen} item={loanModal.item} onClose={() => setLoanModal({isOpen: false, item: null})} onConfirm={handleLoanConfirm} />
-                        <GeminiOutputModal 
-                            isOpen={geminiModal.isOpen} 
-                            title={geminiModal.title} 
-                            content={geminiModal.content} 
-                            onClose={() => setGeminiModal({ ...geminiModal, isOpen: false, content: '' })}
-                            isLoading={geminiModal.isLoading}
-                        />
-
-                        {/* Header */}
-                        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
-                            <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
-                                <div>
-                                    <h1 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
-                                        <span className="bg-indigo-600 text-white p-2 rounded-lg"><TestTube size={24}/></span>
-                                        여울초 과학실 물품 검색
-                                    </h1>
-                                    <div className="flex items-center gap-2 mt-2 ml-1">
-                                        {isOffline ? 
-                                            <span className="text-xs bg-gray-200 px-2 py-0.5 rounded font-bold flex items-center gap-1"><AlertTriangle size={10}/>오프라인 모드</span> : 
-                                            (isLocalMode ? 
-                                                <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-bold flex items-center gap-1"><Laptop size={10}/>로컬 데이터 모드 (초기화 필요)</span> : 
-                                                <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold flex items-center gap-1"><Database size={10}/>온라인 연동됨</span>
-                                            )
-                                        }
-                                    </div>
-                                </div>
-                                <div className="flex gap-2 bg-slate-100 p-1.5 rounded-xl self-start overflow-x-auto">
-                                    <button onClick={() => setActiveTab('search')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold whitespace-nowrap transition-all ${activeTab === 'search' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}><Search size={16}/> 검색</button>
-                                    <button onClick={() => setActiveTab('database')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold whitespace-nowrap transition-all ${activeTab === 'database' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}><Database size={16}/> 전체 DB</button>
-                                    <button onClick={() => setActiveTab('experiments')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold whitespace-nowrap transition-all ${activeTab === 'experiments' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}><Beaker size={16}/> 실험목록</button>
-                                    <button onClick={() => setActiveTab('loans')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold whitespace-nowrap transition-all ${activeTab === 'loans' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}><ClipboardList size={16}/> 대여관리</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Tab Content */}
-                        {activeTab === 'search' && (
-                            <div className="space-y-6">
-                                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                                    <div className="flex flex-col md:flex-row gap-4 mb-4">
-                                        <div className="flex items-center gap-2 text-sm font-medium text-slate-600 min-w-fit"><Filter size={18} /> 필터:</div>
-                                        <div className="flex gap-2">
-                                            {['all', '1과학실', '2과학실'].map(r => (
-                                                <button key={r} onClick={() => setRoomFilter(r)} className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${roomFilter === r ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{r === 'all' ? '전체' : r}</button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <div className="relative mb-4">
-                                        <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
-                                        <input type="text" placeholder="검색어 입력 (물품명, 위치, 실험명...)" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-12 pr-4 py-4 text-lg bg-slate-50 border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:bg-white focus:outline-none transition-all" />
-                                    </div>
-                                    <button onClick={() => setShowAddForm(!showAddForm)} className="w-full py-3 border-2 border-dashed border-indigo-200 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors">
-                                        {showAddForm ? <X size={20}/> : <PlusCircle size={20}/>}{showAddForm ? '닫기' : '새 물품 직접 추가하기'}
-                                    </button>
-                                </div>
-                                {showAddForm && (
-                                    <div className="bg-white rounded-2xl shadow-lg border border-indigo-100 p-6 animate-fade-in-down">
-                                        <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><PlusCircle size={20} className="text-indigo-600"/> 새 물품 등록</h3>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                                            <div className="space-y-1"><label className="text-sm text-slate-500">물품명</label><input className="w-full border p-2 rounded" value={newItem.item} onChange={e => setNewItem({...newItem, item: e.target.value})} placeholder="예: 비커" /></div>
-                                            <div className="space-y-1"><label className="text-sm text-slate-500">위치</label><input className="w-full border p-2 rounded" value={newItem.location} onChange={e => setNewItem({...newItem, location: e.target.value})} placeholder="예: 1과교 3" /></div>
-                                            <div className="space-y-1"><label className="text-sm text-slate-500">장소</label><select className="w-full border p-2 rounded" value={newItem.room} onChange={e => setNewItem({...newItem, room: e.target.value})}><option value="1과학실">1과학실</option><option value="2과학실">2과학실</option></select></div>
-                                            <div className="space-y-1"><label className="text-sm text-slate-500">수량</label><input type="number" className="w-full border p-2 rounded" value={newItem.quantity} onChange={e => setNewItem({...newItem, quantity: parseInt(e.target.value) || 0})} /></div>
-                                        </div>
-                                        <button onClick={addItem} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">등록하기</button>
-                                    </div>
-                                )}
-                                {searchTerm && searchResults.type !== 'none' && (
-                                    <div className="animate-fade-in">
-                                        {searchResults.type === 'experiment' && (
-                                            <div className="mb-6 bg-purple-50 border border-purple-100 rounded-2xl p-6">
-                                                <div className="flex items-center gap-3 mb-2">
-                                                    <Beaker className="text-purple-600"/>
-                                                    <h3 className="text-xl font-bold text-purple-900">{searchResults.data.experiment.name} <span className="text-sm bg-purple-200 px-2 py-0.5 rounded-full">{searchResults.data.experiment.grade}학년</span></h3>
-                                                </div>
-                                                <div className="flex flex-wrap gap-2">{searchResults.data.experiment.tools.map((t,i) => <span key={i} className="px-2 py-1 bg-white border border-purple-200 rounded text-purple-700 text-sm">{t}</span>)}</div>
-                                                
-                                                {/* Gemini API Experiment Feature Button */}
-                                                <button 
-                                                    onClick={() => analyzeExperiment(searchResults.data.experiment.name, searchResults.data.experiment.tools)}
-                                                    className={`w-full mt-3 py-2 text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 bg-indigo-100 text-indigo-600 hover:bg-indigo-200 ${isLocalMode ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                                    disabled={isLocalMode}
-                                                >
-                                                    <Sparkles size={16}/> ✨ 실험 정보 분석
-                                                </button>
-                                            </div>
-                                        )}
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                            {(searchResults.data.items || searchResults.data).map(item => <InventoryCard key={item.id} item={item} highlight={true} />)}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {activeTab === 'database' && (
-                            <div className="space-y-6 animate-fade-in">
-                                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                                    <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-                                        <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Database size={24} className="text-indigo-600"/> 전체 물품 목록</h2>
-                                        <div className="flex flex-wrap items-center gap-2">
-                                            {isLocalMode && (
-                                                <div className="flex items-center gap-1 text-xs font-bold text-orange-600 bg-orange-100 px-2 py-1 rounded">
-                                                    <AlertTriangle size={12}/> 데이터 초기화(업로드) 필요
-                                                </div>
-                                            )}
-                                            <button onClick={downloadExcel} className="px-3 py-1.5 bg-green-50 text-green-700 rounded-lg text-sm font-bold border border-green-200 flex items-center gap-1"><FileSpreadsheet size={14}/> 엑셀</button>
-                                            <button onClick={uploadInitialData} disabled={uploading || isOffline} className={`px-3 py-1.5 rounded-lg text-sm font-bold border flex items-center gap-1 ${isLocalMode ? 'bg-orange-600 text-white border-orange-600 hover:bg-orange-700 animate-pulse' : 'bg-indigo-50 text-indigo-600 border-indigo-200'}`}>
-                                                {uploading ? <RefreshCw className="animate-spin" size={14}/> : <UploadCloud size={14}/>} {isLocalMode ? '데이터 초기화(업로드)' : '초기화'}
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div className="flex gap-2 mb-4">
-                                        {['all', '1과학실', '2과학실'].map(r => <button key={r} onClick={() => setRoomFilter(r)} className={`px-3 py-1 text-sm rounded border ${roomFilter === r ? 'bg-slate-800 text-white' : 'bg-white'}`}>{r === 'all' ? '전체' : r}</button>)}
-                                    </div>
-                                    {loading ? <div className="text-center py-10"><RefreshCw className="animate-spin mx-auto text-slate-400"/></div> : (
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{filteredInventory.map(item => <InventoryCard key={item.id} item={item} />)}</div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-
-                        {activeTab === 'experiments' && (
-                            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 animate-fade-in">
-                                <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2"><Beaker className="text-indigo-600"/> 실험 목록</h2>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {experiments.map((exp, idx) => (
-                                        <button 
-                                            key={idx} 
-                                            onClick={() => { analyzeExperiment(exp.name, exp.tools) }}
-                                            className="flex flex-col text-left bg-slate-50 hover:bg-indigo-50 border rounded-xl p-5 transition-all group"
-                                        >
-                                            <div className="flex justify-between w-full mb-2"><h3 className="font-bold text-slate-700 group-hover:text-indigo-700">{exp.name}</h3><span className="text-xs bg-white border px-2 py-1 rounded-full">{exp.grade}학년</span></div>
-                                            <p className="text-sm text-slate-500">{exp.tools.join(', ')}</p>
-                                            <div className="mt-2 text-indigo-500 font-semibold text-xs flex items-center gap-1">
-                                                <Sparkles size={14}/> ✨ 실험 정보 분석
-                                            </div>
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {activeTab === 'loans' && (
-                            <div className="space-y-6 animate-fade-in">
-                                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                                    <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-                                        <ClipboardList className="text-indigo-600"/> 대여 현황
-                                        <span className="text-sm bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold">{loans.length}건</span>
-                                    </h2>
-                                    
-                                    {loans.length === 0 ? (
-                                        <div className="text-center py-20 bg-slate-50 rounded-xl border border-dashed border-slate-300">
-                                            <ClipboardList className="mx-auto text-slate-300 mb-3" size={48}/>
-                                            <p className="text-slate-500">현재 대여 중인 물품이 없습니다.</p>
-                                        </div>
-                                    ) : (
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-left text-sm">
-                                                <thead className="bg-slate-50 border-b border-slate-200">
-                                                    <tr>
-                                                        <th className="p-4 font-bold text-slate-600">대여자</th>
-                                                        <th className="p-4 font-bold text-slate-600">물품명</th>
-                                                        <th className="p-4 font-bold text-slate-600">수량</th>
-                                                        <th className="p-4 font-bold text-slate-600">대여시간</th>
-                                                        <th className="p-4 font-bold text-slate-600 text-center">관리</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-100">
-                                                    {loans.map((loan) => (
-                                                        <tr key={loan.id} className={`hover:bg-slate-50 ${loan.status === 'returned' ? 'bg-slate-50 opacity-60' : ''}`}>
-                                                            <td className="p-4 font-bold text-slate-800">{loan.borrower}</td>
-                                                            <td className="p-4 text-slate-700">
-                                                                <div className="font-medium">{loan.itemName}</div>
-                                                                <div className="text-xs text-slate-400 flex items-center gap-1"><MapPin size={10}/> {loan.location}</div>
-                                                            </td>
-                                                            <td className="p-4 font-bold text-indigo-600">{loan.quantity}개</td>
-                                                            <td className="p-4 text-slate-500 text-xs">
-                                                                {loan.timestamp ? new Date(loan.timestamp.seconds * 1000).toLocaleString() : '방금 전'}
-                                                            </td>
-                                                            <td className="p-4 text-center">
-                                                                {loan.status === 'returned' ? (
-                                                                    <div className="flex items-center justify-center gap-1 text-green-700 font-bold bg-green-100 px-3 py-1.5 rounded-lg border border-green-200 shadow-sm">
-                                                                        <CheckCircle size={16}/> 반납완료
-                                                                    </div>
-                                                                ) : (
-                                                                    <button 
-                                                                        onClick={() => handleReturn(loan)}
-                                                                        className="px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 rounded-lg font-bold hover:bg-indigo-50 flex items-center gap-1 mx-auto transition-colors"
-                                                                    >
-                                                                        <CornerDownRight size={14}/> 반납
-                                                                    </button>
-                                                                )}
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        };
-
-        const root = createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+        <div className="mt-8 text-center text-slate-400 text-sm pb-8"><p>© 2025 비비드 </p></div>
+      </div>
+    </div>
+  );
+};
+export default App;
