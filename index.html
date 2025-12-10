@@ -1015,7 +1015,10 @@
                     await batch.commit();
                     showToast("초기 데이터 업로드 완료 (이제 대여 기능 사용 가능)");
                     setIsLocalMode(false);
-                } catch (e) { showToast("오류: " + e.message, "error"); }
+                } catch (e) { 
+                    // 에러 메시지를 사용자에게 명확하게 전달
+                    showToast(`업로드 오류: ${e.message}`, "error"); 
+                }
                 finally { setUploading(false); }
             };
 
